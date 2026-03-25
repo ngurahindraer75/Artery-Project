@@ -122,31 +122,37 @@ public:
         K[6] = P_[12] * S_inv[0] + P_[13] * S_inv[2];
         K[7] = P_[12] * S_inv[1] + P_[13] * S_inv[3];
 
-        // ---- PERBAIKAN DI SINI ----
-        // x_ = x_ + K * y
-        // Menggunakan nama variabel baru 'innovation'
-        x_[0] = x_[0] + (K[0] * innovation[0] + K[1] * innovation[1]);
-        x_[1] = x_[1] + (K[2] * innovation[0] + K[3] * innovation[1]);
-        x_[2] = x_[2] + (K[4] * innovation[0] + K[5] * innovation[1]);
-        x_[3] = x_[3] + (K[6] * innovation[0] + K[7] * innovation[1]);
-        // ---- AKHIR PERBAIKAN 2 ----
+        // ---- PEMBARUAN STATE (x = x + K * innovation) ----
+        // K adalah matriks 4x2 (8 elemen). innovation adalah 2x1.
+        for(int i = 0; i < 4; i++) {
+            x_[i] += K[i*2 + 0] * innovation[0] + K[i*2 + 1] * innovation[1];
+        }
 
-
-        // P_ = (I - K * H) * P_
+        // ---- PEMBARUAN KOVARIANS (P = (I - KH) * P) ----
         std::vector<double> I_KH(16, 0.0);
-        I_KH[0] = 1.0 - K[0]; I_KH[1] = -K[1];
-        I_KH[4] = -K[2]; I_KH[5] = 1.0 - K[3];
-        I_KH[8] = -K[4]; I_KH[9] = -K[5];
-        I_KH[10] = 1.0;
-        I_KH[12] = -K[6]; I_KH[13] = -K[7];
-        I_KH[15] = 1.0;
+        for(int i = 0; i < 4; i++) {
+            I_KH[i*4 + i] = 1.0; // Inisialisasi Matriks Identitas (I)
+            for(int j = 0; j < 4; j++) {
+                double kh = 0.0;
+                // K ukuran 4x2, H ukuran 2x4
+                for(int k = 0; k < 2; k++) {
+                    kh += K[i*2 + k] * H_[k*4 + j];
+                }
+                I_KH[i*4 + j] -= kh;
+            }
+        }
 
         std::vector<double> P_old = P_;
-        P_[0] = I_KH[0] * P_old[0] + I_KH[1] * P_old[4];
-        P_[1] = I_KH[0] * P_old[1] + I_KH[1] * P_old[5];
-        P_[4] = I_KH[4] * P_old[0] + I_KH[5] * P_old[4];
-        P_[5] = I_KH[4] * P_old[1] + I_KH[5] * P_old[5];
-        // (Sederhana, hanya update bagian atas 2x2 dari P)
+        std::vector<double> P_new(16, 0.0);
+        // P_new = I_KH * P_old
+        for(int i = 0; i < 4; i++) {
+            for(int j = 0; j < 4; j++) {
+                for(int k = 0; k < 4; k++) {
+                    P_new[i*4 + j] += I_KH[i*4 + k] * P_old[k*4 + j];
+                }
+            }
+        }
+        P_ = P_new;
     }
 
     // Fungsi untuk memprediksi state ke masa depan
@@ -170,19 +176,39 @@ private:
 
     // PREDICT step internal
     void predict() {
-        // x_ = F * x_
+        // 1. Prediksi State: x_new = F * x_
         std::vector<double> x_new(4, 0.0);
-        x_new[0] = x_[0] * F_[0] + x_[2] * F_[2];
-        x_new[1] = x_[1] * F_[5] + x_[3] * F_[7];
-        x_new[2] = x_[2] * F_[10];
-        x_new[3] = x_[3] * F_[15];
+        for(int i = 0; i < 4; i++) {
+            for(int j = 0; j < 4; j++) {
+                x_new[i] += F_[i*4 + j] * x_[j];
+            }
+        }
         x_ = x_new;
 
-        // P_ = F * P_ * F_transpose + Q
-        // (Implementasi disederhanakan untuk performa, mengabaikan P update
-        // di predict() untuk implementasi cepat ini.
-        // Implementasi penuh akan membutuhkan perkalian matriks 4x4)
-        // P = F * P_ * F_T + Q;
+        // 2. Prediksi Kovarians: P_ = F * P_ * F_transpose + Q
+        std::vector<double> P_temp(16, 0.0);
+        
+        // P_temp = F_ * P_
+        for(int i = 0; i < 4; i++) {
+            for(int j = 0; j < 4; j++) {
+                for(int k = 0; k < 4; k++) {
+                    P_temp[i*4 + j] += F_[i*4 + k] * P_[k*4 + j];
+                }
+            }
+        }
+
+        std::vector<double> P_new(16, 0.0);
+        // P_new = P_temp * F_transpose + Q_
+        for(int i = 0; i < 4; i++) {
+            for(int j = 0; j < 4; j++) {
+                for(int k = 0; k < 4; k++) {
+                    // Transpose dari F: elemen (k,j) dipetakan ke indeks [j*4 + k]
+                    P_new[i*4 + j] += P_temp[i*4 + k] * F_[j*4 + k]; 
+                }
+                P_new[i*4 + j] += Q_[i*4 + j]; // Tambahkan Noise Proses
+            }
+        }
+        P_ = P_new;
     }
 
     // Update matriks F dan Q berdasarkan dt
