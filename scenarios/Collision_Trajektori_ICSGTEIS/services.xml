@@ -8,7 +8,7 @@
         </filters>
     </service>
 
-    <service type="artery.application.TrajektoriApp" name="TrajApp">
+    <service type="artery.application.TrajektoriAppVerIND" name="TrajApp">
         <listener port="2002"/>
         <filters>
             <type pattern="artery.inet.Car" match="true"/>
