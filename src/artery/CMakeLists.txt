@@ -3,6 +3,10 @@ add_library(core SHARED
     StaticNodeManager.cc
     application/CaObject.cc
     application/CaService.cc
+    application/CamLogger.cc
+    application/TrajektoriApp.cc
+    application/TrajektoriAppVer2.cc
+    application/KalmanFilter2D.h
     application/DenmObject.cc
     application/DenService.cc
     application/ExampleService.cc

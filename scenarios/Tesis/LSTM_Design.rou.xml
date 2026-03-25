@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2025-06-27 12:20:12 by Eclipse SUMO netedit Version 1.15.0
+-->
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+
+    <!-- VTypes -->
+    <vType id="DEFAULT_VEHTYPE"
+    		speedFactor="1.2"
+    		tau="1.0"
+    		sigma="0.6" 
+    		accel="3.0"
+    		decel="4.5"
+    		minGap="1.0"  
+    		impatience="0.8"
+    		actionStepLength="0.8" 
+    		jmCrossingGap="8.0" 
+    		jmIgnoreFoeProb="0.6"/>
+    		
+    <vType id="DEFAULT_PEDTYPE"
+    		vClass="pedestrian"
+    		impatience="0.7"
+    		actionStepLength="0.2"
+    		jmCrossingGap="2.0"
+    		jmIgnoreFoeProb="0.6"
+    		sigma="0.4" 
+    		tau="0.3"
+    		minGap="0.00"/> 
+    		
+    <!-- Routes -->
+    <route id="r_0" edges="-E8 E4 E9 E10 E11"/>
+    
+    <!-- Vehicles, persons and containers (sorted by depart) -->
+    <vehicle id="v_0" depart="0.00" route="r_0"/>
+    <person id="p_0" depart="0.00">
+        <walk from="E8" to="E3" arrivalPos="143.00" speed="1.65"/>
+    </person>
+</routes>

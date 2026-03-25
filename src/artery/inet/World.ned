@@ -43,7 +43,7 @@ network World
             parameters:
                 @display("p=140,20");
         }
-
+		
         rsu[numRoadSideUnits]: RSU {
             parameters:
                 mobility.initFromDisplayString = false;

@@ -1,6 +1,9 @@
 add_subdirectory(artery)
-
+add_subdirectory(Collision_Scenario_2)
+add_subdirectory(Collision_Trajektori)
+add_subdirectory(Collision_Trajektori_ICSGTEIS)
 add_subdirectory(gemv2)
+add_subdirectory(Tesis)
 add_subdirectory(highway-police)
 if(WITH_ENVMOD)
     add_subdirectory(envmod)

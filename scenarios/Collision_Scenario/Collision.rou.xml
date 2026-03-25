@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2025-06-16 06:14:31 by Eclipse SUMO netedit Version 1.15.0
+-->
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- VTypes -->
+    <vType id="DEFAULT_PEDTYPE" minGap="0.00" vClass="pedestrian" impatience="1.00" guiShape="passenger" jmCrossingGap="0.00" jmIgnoreFoeProb="1.00" sigma="1.00" tau="0.50"/>
+    <vType id="DEFAULT_VEHTYPE" minGap="0.00" actionStepLength="1.00" impatience="1.00" lcStrategic="0.00" jmCrossingGap="0.00" jmIgnoreFoeProb="1.00" sigma="1.00" tau="0.50"/>
+    <!-- Routes -->
+    <route id="Route1" edges="-E4 E6" color="red"/>
+    <route id="Route2" edges="-E6 E4" color="cyan"/>
+    <!-- Vehicles, persons and containers (sorted by depart) -->
+    <personFlow id="Ped1" begin="0.00" end="3600.00" personsPerHour="200.00">
+        <walk from="E4" to="-E4"/>
+    </personFlow>
+    <personFlow id="Ped2" begin="0.00" end="3600.00" personsPerHour="200.00">
+        <walk from="E6" to="-E6"/>
+    </personFlow>
+    <flow id="CyanCar" begin="0.00" color="cyan" route="Route2" end="3600.00" vehsPerHour="500.00"/>
+    <flow id="RedCar" begin="0.00" color="red" route="Route1" end="3600.00" vehsPerHour="500.00"/>
+</routes>

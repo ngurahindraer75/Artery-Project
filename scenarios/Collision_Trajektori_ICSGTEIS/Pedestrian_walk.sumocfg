@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2025-06-27 12:21:58 by Eclipse SUMO GUI Version 1.15.0
+-->
+
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="Collision.net.xml"/>
+        <route-files value="Pedestrian_walk.rou.xml"/>
+    </input>
+    
+    <time>
+        <begin value="0"/>
+        <end value="140"/>
+        <step-length value="0.1"/>
+    </time>
+
+    <report>
+        <xml-validation value="always"/>
+        <xml-validation.net value="always"/>
+        <no-step-log value="false"/>
+    </report>
+    
+    <output>
+    	<summary-output value="output_sumo/TripSummary_walk.xml"/>
+    	<fcd-output value="output_sumo/SumoTrace_walk.xml"/>
+    </output>
+</configuration>
