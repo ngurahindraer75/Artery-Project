@@ -3,74 +3,73 @@
 
 #include "artery/application/ItsG5BaseService.h"
 #include "artery/application/VehicleDataProvider.h"
-#include "KalmanFilterIND.h" // <- PENTING: Include file KF kita
+#include "KalmanFilterIND.h" 
 #include <omnetpp/simtime.h>
 #include <deque>
 #include <fstream>
 #include <string>
 #include <map>
 #include <vector>
-#include <memory> // Untuk std::unique_ptr
+#include <memory> 
 
 namespace artery
 {
+    struct MovementData {
+        omnetpp::simtime_t timestamp;
+        double latitude;
+        double longitude;
+        double speed_mps;
+    };
 
-// Struct data mentah (Sama seperti v1)
-struct MovementData {
-    omnetpp::simtime_t timestamp;
-    double latitude;
-    double longitude;
-    double speed_mps;
-};
+    // --- STRUKTUR BARU: Buffer Prediksi Gantung ---
+    struct PendingPrediction {
+        double target_time;
+        double creation_time;
+        double slope_lat;
+        double intercept_lat;
+        double slope_lon;
+        double intercept_lon;
+    };
 
-// Struct history (Dimodifikasi untuk KF)
-struct AgentHistory {
-    std::deque<MovementData> history; // Masih berguna untuk log mentah
-    omnetpp::simtime_t lastReceptionTime;
-    bool hasNewData = false;
+    struct AgentHistory {
+        std::deque<MovementData> history; 
+        omnetpp::simtime_t lastReceptionTime;
+        bool hasNewData = false;
+        
+        std::unique_ptr<KalmanFilterIND> kf_state;
+        std::vector<PendingPrediction> pending_predictions; // Memori prediksi gantung
+    };
 
-    // --- PERUBAHAN UTAMA ---
-    // Setiap agen sekarang memiliki instance Kalman Filter-nya sendiri
-    std::unique_ptr<KalmanFilterIND> kf_state;
-    // ----------------------
-};
-
-// Ganti nama class
-class TrajektoriAppVerIND : public ItsG5BaseService
-{
+    class TrajektoriAppVerIND : public ItsG5BaseService
+    {
     public:
         void initialize() override;
         void finish() override;
 
     protected:
         void handleMessage(omnetpp::cMessage* msg) override;
-        void receiveSignal(omnetpp::cComponent* source, omnetpp::simsignal_t signalID, omnetpp::cObject* obj, omnetpp::cObject* details) override;
+        void receiveSignal(omnetpp::cComponent* source, omnetpp::simsignal_t signalID,
+                           omnetpp::cObject* obj, omnetpp::cObject* details) override;
 
     private:
-        // Fungsi lama untuk log mentah (tidak berubah)
         void logTrajectory();
         std::string getNodeType();
-
-        // --- PERUBAHAN UTAMA ---
-        // Ganti nama dari logCoefficients menjadi runPredictions
         void runPredictions();
-        // ----------------------
 
-        // Variabel lama (tidak berubah)
         omnetpp::cMessage* mLogTimer = nullptr;
         omnetpp::simsignal_t mCamReceivedSignal;
         omnetpp::SimTime mLogInterval;
         std::ofstream mLogFile;
         std::map<long, AgentHistory> mOtherNodes;
         const artery::VehicleDataProvider* mVehicleDataProvider = nullptr;
-        
-        // --- PERUBAHAN UTAMA ---
-        // Ganti nama timer dan file log
+
         omnetpp::cMessage* mPredictionTimer = nullptr;
         std::ofstream mPredictionLogFile;
-        // ----------------------
-};
-
+        
+        // --- VARIABEL PELACAK MAE ---
+        double mTotalAE = 0.0;
+        int mCountAE = 0;
+    };
 } // namespace artery
 
 #endif /* ARTERY_TRAJEKTORIAPPVERIND_H_ */

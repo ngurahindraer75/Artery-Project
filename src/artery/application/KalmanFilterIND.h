@@ -54,6 +54,13 @@ public:
         return is_initialized_;
     }
 
+    // --- TAMBAHAN BARU: FUNGSI WAJIB UNTUK EKSTRAKSI STATE TRANSLASI ---
+    // Mengembalikan vektor 6D: [x, y, vx, vy, ax, ay]
+    std::vector<double> getState() const {
+        return x_;
+    }
+    // ---------------------------------------------------------------------
+
     void update(double x, double y, double timestamp) {
         if (!is_initialized_) {
             init(x, y, timestamp);
