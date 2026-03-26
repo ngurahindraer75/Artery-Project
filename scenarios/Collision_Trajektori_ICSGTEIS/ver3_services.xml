@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services>
+    <service type="artery.application.CaService" name="CS">
+        <listener port="2001"/>
+        <filters>
+            <type pattern="artery.inet.Car" match="true"/>
+            <type pattern="artery.inet.Person" match="true"/>
+        </filters>
+    </service>
+
+    <service type="artery.application.TrajektoriAppVerIND" name="TrajApp">
+        <listener port="2002"/>
+        <filters>
+            <type pattern="artery.inet.Car" match="true"/>
+            <type pattern="artery.inet.Person" match="true"/>
+        </filters>
+    </service>
+</services>

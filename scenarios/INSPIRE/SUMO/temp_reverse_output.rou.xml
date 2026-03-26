@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2025-04-18 01:32:40 by Eclipse SUMO duarouter Version 1.15.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/duarouterConfiguration.xsd">
+
+    <input>
+        <net-file value="erlangen.net.xml"/>
+        <route-files value="temp_reverse.trips.xml"/>
+    </input>
+
+    <output>
+        <output-file value="temp_reverse_output.rou.xml"/>
+    </output>
+
+    <report>
+        <ignore-errors value="true"/>
+    </report>
+
+</configuration>
+-->
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="vtype0" length="2.50" minGap="2.50" maxSpeed="14.00" accel="2.6" decel="4.5" sigma="0.5"/>
+    <vehicle id="find_reverse_route" type="vtype0" depart="0.00">
+        <route edges="4900041#1 4900041#2 4900041#3 4900041#0 -4900043 -4006702#1 -4006702#0 4319352#1 44069041#0 44069041#1 4400949 31982182#0 4047241 4797872 4797871 4006668 126606716 113939242#0 5445204#1 5445204#2 39539626 -39539626"/>
+    </vehicle>
+</routes>

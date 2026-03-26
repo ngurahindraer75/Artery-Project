@@ -15,7 +15,9 @@ namespace artery
 
 // Struct to hold raw movement data from CAMs
 struct MovementData {
-    omnetpp::simtime_t timestamp;
+    uint16_t genDeltaTime;              // <-- TAMBAHAN BARU: Nilai mentah 
+    omnetpp::simtime_t timestamp;       // Time when the CAM was sent
+    omnetpp::simtime_t receptionTime;   // Time when the CAM was received
     double latitude;
     double longitude;
     double speed_mps;
@@ -54,6 +56,10 @@ class TrajektoriApp : public ItsG5BaseService
         // ADDITION: New functions for coefficient calculation
         void logCoefficients();
         RegressionCoefficients calculateCoefficients(const std::vector<MovementData>& points);
+
+        // --- TAMBAHAN BARU: Variabel pelacak MAE ---
+        double mTotalAE = 0.0;
+        int mCountAE = 0;
 
         // Original member variables
         omnetpp::cMessage* mLogTimer = nullptr;

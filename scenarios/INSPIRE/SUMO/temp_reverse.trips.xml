@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+
+<routes>
+    <vType id="vtype0" accel="2.6" decel="4.5" sigma="0.5" length="2.5" minGap="2.5" maxSpeed="14"/> 
+
+    <trip id="find_reverse_route" type="vtype0" depart="0" from="4900041#1" to="-39539626" /> 
+</routes>

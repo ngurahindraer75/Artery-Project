@@ -1,0 +1,13 @@
+add_opp_run(INSPIRE CONFIG omnetpp.ini)
+add_opp_test(INSPIRE SUFFIX inet CONFIG inet SIMTIME_LIMIT 600s)
+add_opp_test(INSPIRE SUFFIX security CONFIG inet_security SIMTIME_LIMIT 600s)
+add_opp_test(INSPIRE SUFFIX inet-mco CONFIG inet_mco SIMTIME_LIMIT 600s)
+add_opp_test(INSPIRE SUFFIX inet-mixed-vehicles CONFIG inet_multiple_vehicle_types SIMTIME_LIMIT 600s)
+add_opp_test(INSPIRE SUFFIX inet-nakagami CONFIG inet_nakagami SIMTIME_LIMIT 600s)
+add_opp_test(INSPIRE SUFFIX inet-rsu CONFIG inet_rsu SIMTIME_LIMIT 600s)
+add_opp_test(INSPIRE SUFFIX veins CONFIG veins SIMTIME_LIMIT 600s)
+add_opp_test(INSPIRE SUFFIX veins-rsu CONFIG veins_rsu SIMTIME_LIMIT 600s)
+
+if(WITH_ENVMOD)
+    add_opp_test(INSPIRE SUFFIX envmod CONFIG envmod SIMTIME_LIMIT 600s)
+endif()

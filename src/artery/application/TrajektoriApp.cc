@@ -8,6 +8,7 @@
 #include <cmath>
 #include <iomanip>
 #include <vector>
+#include <chrono>
 
 namespace artery {
 using namespace omnetpp;
@@ -42,7 +43,7 @@ void TrajektoriApp::initialize()
 
     mLogFile.open(logFilename, std::ios::out | std::ios::app);
     if (mLogFile.tellp() == 0) {
-        mLogFile << "Time_s;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Target_Speed_Raw" << std::endl;
+        mLogFile << "GenDeltaTime;Time_send_s;Time_received_s;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Target_Speed_Raw" << std::endl;
     }
 
     mLogTimer = new cMessage("logTimer");
@@ -60,7 +61,7 @@ void TrajektoriApp::initialize()
     }
     mCoefficientLogFile.open(coefficientLogFilename, std::ios::out | std::ios::app);
     if (mCoefficientLogFile.tellp() == 0) {
-        mCoefficientLogFile << "Time_prediction(s);Node_Target;Slope_Lat;Intercept_Lat;Slope_Lon;Intercept_Lon" << std::endl;
+        mCoefficientLogFile << "Time_prediction(s);Time_absolut_s;Node_Target;Actual_Lat;Actual_Lon;Slope_Lat;Intercept_Lat;Pred_Lat;Slope_Lon;Intercept_Lon;Pred_Lon;Lat_AE;Lon_AE;AE" << std::endl;
     }
     mPredictionTimer = new cMessage("predictionTimer");
     // Schedule the new timer to run every 1 second
@@ -92,7 +93,6 @@ void TrajektoriApp::handleMessage(cMessage* msg)
 
 void TrajektoriApp::receiveSignal(cComponent* source, simsignal_t signalID, cObject* obj, cObject* details)
 {
-    // This entire function remains untouched as its job is only to collect data.
     if (signalID != mCamReceivedSignal) {
         return;
     }
@@ -100,18 +100,53 @@ void TrajektoriApp::receiveSignal(cComponent* source, simsignal_t signalID, cObj
     if (!ca_obj) {
         return;
     }
-    const cPacket* packet = dynamic_cast<const cPacket*>(details);
-    simtime_t creationTime = packet ? packet->getCreationTime() : simTime();
     const auto& cam = *ca_obj->asn1();
     long stationId = cam.header.stationID;
     const auto& basic = cam.cam.camParameters.basicContainer;
     const auto& hfc = cam.cam.camParameters.highFrequencyContainer;
+
     if (hfc.present != HighFrequencyContainer_PR_basicVehicleContainerHighFrequency) {
         return;
     }
     const auto& bvc = hfc.choice.basicVehicleContainerHighFrequency;
+
     MovementData data;
-    data.timestamp = creationTime;
+        // --- TAMBAHAN BARU: Simpan nilai aslinya tanpa modifikasi ---
+    data.genDeltaTime = static_cast<uint16_t>(cam.cam.generationDeltaTime);
+
+    // --- 1. ABSOLUTE RECEPTION TIME (Time_received) ---
+    omnetpp::simtime_t rxTime = simTime(); 
+    data.receptionTime = rxTime; 
+
+    // --- 2. ACCESSING TAI ETSI TIME ZONE ---
+    // Akses fasilitas Timer Artery untuk sinkronisasi waktu TAI
+    const artery::Timer& timer = getFacilities().get_const<artery::Timer>();
+    auto rx_tai = timer.getTimeFor(rxTime);
+    
+    // Waktu TAI penerimaan dalam format milidetik
+    int64_t rx_tai_ms = std::chrono::duration_cast<std::chrono::milliseconds>(rx_tai.time_since_epoch()).count();
+
+    // --- 3. REKONSTRUKSI LATENSI DARI MODULO 65536 ---
+    // Waktu pengiriman TAI termodulo dari pesan CAM (0 - 65535)
+    uint16_t tx_tai_mod = static_cast<uint16_t>(cam.cam.generationDeltaTime);
+    
+    // Modulokan juga waktu penerimaan TAI dengan 65536
+    uint16_t rx_tai_mod = static_cast<uint16_t>(rx_tai_ms % 65536);
+
+    // Hitung Latensi Transmisi Jaringan (dalam milidetik)
+    int64_t latency_ms;
+    if (rx_tai_mod >= tx_tai_mod) {
+        latency_ms = rx_tai_mod - tx_tai_mod;
+    } else {
+        // Terjadi wrap-around (waktu melewati batas 65.536 milidetik / ~65,5 detik)
+        latency_ms = (rx_tai_mod + 65536) - tx_tai_mod;
+    }
+
+    // --- 4. WAKTU PENGIRIMAN ABSOLUT (Time_send) ---
+    // Waktu pengiriman = Waktu penerimaan dikurangi latensi
+    data.timestamp = rxTime - omnetpp::SimTime(latency_ms, omnetpp::SIMTIME_MS);
+    
+    // Continue with coordinate extraction
     data.latitude = static_cast<double>(basic.referencePosition.latitude)/10;
     data.longitude = static_cast<double>(basic.referencePosition.longitude)/10;
     data.speed_mps = static_cast<double>(bvc.speed.speedValue);
@@ -124,7 +159,6 @@ void TrajektoriApp::receiveSignal(cComponent* source, simsignal_t signalID, cObj
     }
 }
 
-// --- Original logTrajectory function (Untouched) ---
 void TrajektoriApp::logTrajectory()
 {
     auto& vdp = getFacilities().get_const<VehicleDataProvider>();
@@ -136,57 +170,119 @@ void TrajektoriApp::logTrajectory()
                 continue;
             }
             MovementData latest = targetHist.history.back();
-            mLogFile << std::fixed << std::setprecision(12)
-                     << latest.timestamp.dbl() << ";"
-                     << myId << ";"
-                     << targetId << ";"
-                     << latest.latitude << ";"
-                     << latest.longitude << ";"
-                     << latest.speed_mps << std::endl;
+            mLogFile    << latest.genDeltaTime << ";"
+                        << std::fixed << std::setprecision(12)
+                        << latest.timestamp.dbl() << ";" // print timestamp when the CAM was Created
+                        << latest.receptionTime.dbl() << ";" // print timestamp when the CAM was received
+                        << myId << ";"
+                        << targetId << ";"
+                        << latest.latitude << ";"
+                        << latest.longitude << ";"
+                        << latest.speed_mps << std::endl;
             targetHist.hasNewData = false;
         }
     }
     mLogFile.flush();
 }
-// --- End of Original logTrajectory function ---
-
-
-// --- ADDITION: New functions to implement the requested logic ---
 
 // This function is called every 1 second by the new timer
 void TrajektoriApp::logCoefficients()
 {
     simtime_t now = simTime();
+    
+    // --- PARAMETER SKENARIO PREDIKSI ---
+    // Ubah horizon_s menjadi 2.0 untuk pengujian "Mid-Term Prediction"
+    double horizon_s = 1.0; 
+    double window_s = 1.0;  // Jendela data histori (1 detik)
+    
+    // Target waktu yang ingin diprediksi dan dievaluasi
+    double target_time = now.dbl() - horizon_s; 
+    
+    // Batas akhir waktu data yang boleh dipakai untuk meregresi prediksi ini
+    double prediction_creation_time = target_time - horizon_s; 
+
     for (auto const& [targetId, targetHist] : mOtherNodes)
     {
-        std::vector<MovementData> points_1s;
-        // 1. Collect data points within the ideal 1-second window
+        // --- Cek Timeout (Data Stale) ---
+        if ((now - targetHist.lastReceptionTime).dbl() > 2.0) {
+            continue; // Lewati perhitungan regresi untuk node ini
+        }
+        
+        std::vector<MovementData> regression_points;
+        MovementData closest_actual_data;
+        double min_time_diff = 9999.0;
+        bool found_actual = false;
+        
         for (const auto& point : targetHist.history) {
-            if (now - point.timestamp <= 1.0 && now > point.timestamp) { // ensure we are using past data
-                points_1s.push_back(point);
+            double t = point.timestamp.dbl();
+            
+            // 1. Kumpulkan data Regresi di jendela masa lalu
+            if (t <= prediction_creation_time && t > (prediction_creation_time - window_s)) {
+                regression_points.push_back(point);
+            }
+            
+            // 2. Cari data Ground Truth riil yang PALING MENDEKATI target_time
+            double time_diff = std::abs(t - target_time);
+            if (time_diff < min_time_diff) {
+                min_time_diff = time_diff;
+                closest_actual_data = point;
+                found_actual = true;
             }
         }
-
-        // 2. Apply fallback logic if needed
-        if (points_1s.size() < 2 && targetHist.history.size() >= 2) {
-            points_1s.clear();
-            points_1s.push_back(targetHist.history[targetHist.history.size() - 2]);
-            points_1s.push_back(targetHist.history.back());
+        
+        // 3. Fallback logic: Jika data regresi di jendela tersebut kurang dari 2 titik
+        if (regression_points.size() < 2) {
+            regression_points.clear();
+            std::vector<MovementData> past_points;
+            for (const auto& point : targetHist.history) {
+                if (point.timestamp.dbl() <= prediction_creation_time) {
+                    past_points.push_back(point);
+                }
+            }
+            // Ambil 2 titik data terakhir yang tersedia
+            if (past_points.size() >= 2) {
+                regression_points.push_back(past_points[past_points.size() - 2]);
+                regression_points.push_back(past_points.back());
+            }
         }
-
-        // 3. Calculate coefficients if we have enough points
-        if (points_1s.size() >= 2) {
-            RegressionCoefficients coeffs = calculateCoefficients(points_1s);
+        
+        // 4. Kalkulasi Prediksi dan Cetak Log Terpadu
+        if (regression_points.size() >= 2 && found_actual) {
+            RegressionCoefficients coeffs = calculateCoefficients(regression_points);
             if (coeffs.valid) {
-                // 4. Log the results to the new file
+                double pred_lat = coeffs.a_lat + (coeffs.b_lat * target_time);
+                double pred_lon = coeffs.a_lon + (coeffs.b_lon * target_time);
+                
+                // --- Perhitungan Absolute Error (AE) ---
+                double lat_ae = std::abs(closest_actual_data.latitude - pred_lat);
+                double lon_ae = std::abs(closest_actual_data.longitude - pred_lon);
+                // Jarak Euclidean 2D (Spatial Error)
+                double ae = std::sqrt((lat_ae * lat_ae) + (lon_ae * lon_ae)); 
+                
+                // Akumulasi untuk perhitungan MAE akhir
+                mTotalAE += ae;
+                mCountAE++;
+                // ------------------------------------------------------
+                
                 mCoefficientLogFile << std::fixed << std::setprecision(12)
-                                  << (now + 1.0).dbl() << ";" // Time prediction is 1s from now
-                                  << targetId << ";"
-                                  << coeffs.b_lat << ";" << coeffs.a_lat << ";"
-                                  << coeffs.b_lon << ";" << coeffs.a_lon << std::endl;
-            }
-        }
-    }
+                                    << target_time << ";"
+                                    << closest_actual_data.timestamp.dbl() << ";"
+                                    << targetId << ";"
+                                    << closest_actual_data.latitude << ";"
+                                    << closest_actual_data.longitude << ";"
+                                    << coeffs.b_lat << ";"
+                                    << coeffs.a_lat << ";"
+                                    << pred_lat << ";"
+                                    << coeffs.b_lon << ";"
+                                    << coeffs.a_lon << ";"
+                                    << pred_lon << ";"       
+                                    << lat_ae << ";"         // Kolom Lat_AE
+                                    << lon_ae << ";"         // Kolom Lon_AE
+                                    << ae << std::endl;      // Kolom AE
+
+                }
+            }                   
+    }    
     mCoefficientLogFile.flush();
 }
 
@@ -229,10 +325,25 @@ void TrajektoriApp::finish()
     // --- Original Finish Logic (Untouched) ---
     if (mLogFile.is_open()) mLogFile.close();
     cancelAndDelete(mLogTimer);
-    // --- End of Original Finish Logic ---
 
-    // --- ADDITION: Clean up new resources ---
-    if (mCoefficientLogFile.is_open()) mCoefficientLogFile.close();
+    // --- ADDITION: Clean up new resources & CETAK MAE ---
+    if (mCoefficientLogFile.is_open()) {
+        
+        // Cetak kalkulasi MAE di bagian paling bawah jika ada data
+        if (mCountAE > 0) {
+            double mae_microdegree = mTotalAE / mCountAE;
+            double mae_meter = mae_microdegree * 0.11132; // Konversi spasial
+            
+            // Memberikan sela 1 baris kosong
+            mCoefficientLogFile << std::endl; 
+            
+            // Mencetak dengan 12 titik koma agar labelnya jatuh sejajar di kolom Lon_AE dan nilainya persis di bawah kolom AE
+            mCoefficientLogFile << ";;;;;;;;;;;;MAE (microdegree);" << std::fixed << std::setprecision(12) << mae_microdegree << std::endl;
+            mCoefficientLogFile << ";;;;;;;;;;;;MAE (meter);" << mae_meter << std::endl;
+        }
+        
+        mCoefficientLogFile.close();
+    }
     cancelAndDelete(mPredictionTimer);
     // --- END OF ADDITION ---
 
