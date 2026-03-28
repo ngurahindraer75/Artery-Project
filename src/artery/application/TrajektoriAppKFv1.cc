@@ -26,14 +26,7 @@ void TrajektoriAppKFv1::initialize() {
     mLogInterval = par("logInterval");
     std::string nodeType = getNodeType();
 
-    // 1. Setup Raw CAM Log File
-    std::string logFilename;
-    if (nodeType == "Vehicle") {
-        logFilename = "results/CAM_data_from_car_KFv1.csv";
-    } else {
-        logFilename = "results/CAM_data_from_person_KFv1.csv";
-    }
-
+    std::string logFilename = (nodeType == "Vehicle") ? "results/CAM_data_from_car_kfv1.csv" : "results/CAM_data_from_person_kfv1.csv";
     mLogFile.open(logFilename, std::ios::out | std::ios::app);
     if (mLogFile.tellp() == 0) {
         mLogFile << "GenDeltaTime_Raw;CAM_Received_Time;Calculated_Delay;CAM_Generation_Time;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Target_Speed_Raw;Target_Heading_Raw" << std::endl;
@@ -45,18 +38,10 @@ void TrajektoriAppKFv1::initialize() {
     mCamReceivedSignal = registerSignal("CamReceived");
     getParentModule()->subscribe(mCamReceivedSignal, this);
 
-    // 2. Setup Prediction Log File (Using 3 Real-Time Time Pillars)
-    std::string kfLogFilename;
-    if (nodeType == "Vehicle") {
-        kfLogFilename = "results/kf_prediction_log_from_car_KFv1.csv";
-    } else {
-        kfLogFilename = "results/kf_prediction_log_from_person_KFv1.csv";
-    }
-
+    std::string kfLogFilename = (nodeType == "Vehicle") ? "results/kf_prediction_log_from_car_v1.csv" : "results/kf_prediction_log_from_person_v1.csv";
     mPredictionLogFile.open(kfLogFilename, std::ios::out | std::ios::app);
     if (mPredictionLogFile.tellp() == 0) {
-        // --- CSV HEADER UPDATED (3 Standardized Time Pillars to match Linear Regression) ---
-        mPredictionLogFile << "Processing_Time(s);Latest_CAM_Time(s);Node_Target;Actual_Lat;Actual_Lon;Target_Prediction_Time(s);KF_Vel_Lat;KF_Vel_Lon;Pred_Lat;Pred_Lon" << std::endl;
+        mPredictionLogFile << "Processing_Time(s);Latest_CAM_Time(s);Target_Prediction_Time(s);Node_Target;Actual_Lat;Actual_Lon;KF_Vel_Lat;KF_Vel_Lon;Pred_Lat;Pred_Lon;Lat_AE;Lon_AE;AE" << std::endl;
     }
 
     mPredictionTimer = new cMessage("predictionTimer");
@@ -92,9 +77,6 @@ void TrajektoriAppKFv1::receiveSignal(cComponent* source, simsignal_t signalID, 
     
     const auto& bvc = hfc.choice.basicVehicleContainerHighFrequency;
 
-    // ========================================================================
-    // HYBRID TIME RECONSTRUCTION (GPS/TAI CALIBRATION + DELAY EXTRACTION)
-    // ========================================================================
     long genDeltaTime_ms = cam.cam.generationDeltaTime;
     simtime_t time_receive = simTime();
     long long current_time_ms = time_receive.inUnit(SIMTIME_MS);
@@ -125,11 +107,8 @@ void TrajektoriAppKFv1::receiveSignal(cComponent* source, simsignal_t signalID, 
     data.heading_degree = static_cast<double>(bvc.heading.headingValue) / 10.0;
 
     AgentHistory& history = mOtherNodes[targetId];
-    history.history.push_back(data);
-    history.lastReceptionTime = time_receive;
-    history.hasNewData = true;
 
-    // UPDATE 4D KALMAN FILTER STATE MATRIX
+    // REGULAR KF STATE UPDATE FOR TRACKING
     if (!history.kf_state) {
         history.kf_state = std::make_unique<KalmanFilter4D>();
         history.kf_state->init(data.latitude, data.longitude, data.timestamp.dbl());
@@ -137,7 +116,10 @@ void TrajektoriAppKFv1::receiveSignal(cComponent* source, simsignal_t signalID, 
         history.kf_state->update(data.latitude, data.longitude, data.timestamp.dbl());
     }
 
-    // Clean up data older than 5 seconds from memory to prevent overflow
+    history.history.push_back(data);
+    history.lastReceptionTime = time_receive;
+    history.hasNewData = true;
+
     while (!history.history.empty() && (simTime().dbl() - history.history.front().timestamp.dbl() > 5.0)) {
         history.history.pop_front();
     }
@@ -146,26 +128,20 @@ void TrajektoriAppKFv1::receiveSignal(cComponent* source, simsignal_t signalID, 
 void TrajektoriAppKFv1::logTrajectory() {
     auto& vdp = getFacilities().get_const<VehicleDataProvider>();
     long myId = vdp.station_id();
-
     if (!mLogFile.is_open()) return;
 
     for (auto& [targetId, targetHist] : mOtherNodes) {
         if (targetHist.hasNewData) {
             if (targetHist.history.empty()) continue;
-
             MovementData latest = targetHist.history.back();
             mLogFile << std::fixed << std::setprecision(12)
                      << latest.gen_delta_time_raw << ";"
                      << latest.cam_received_time << ";"
                      << latest.calculated_delay << ";"
                      << latest.timestamp.dbl() << ";"
-                     << myId << ";"
-                     << targetId << ";"
-                     << latest.latitude << ";"
-                     << latest.longitude << ";"
-                     << latest.speed_mps << ";"
-                     << latest.heading_degree << std::endl;
-
+                     << myId << ";" << targetId << ";"
+                     << latest.latitude << ";" << latest.longitude << ";"
+                     << latest.speed_mps << ";" << latest.heading_degree << std::endl;
             targetHist.hasNewData = false;
         }
     }
@@ -179,54 +155,72 @@ void TrajektoriAppKFv1::runPredictions() {
         long targetId = pair.first;
         auto& hist_struct = pair.second;
 
-        // INSTANT PREDICTION AND PRINTING PROCESS
-        if (hist_struct.kf_state && hist_struct.kf_state->isInitialized() && !hist_struct.history.empty()) {
+        if (hist_struct.history.empty() || !hist_struct.kf_state || !hist_struct.kf_state->isInitialized()) continue;
+        
+        // Fetch the absolute most recent CAM data in memory
+        MovementData current_latest_data = hist_struct.history.back();
+        double current_latest_cam_time = current_latest_data.timestamp.dbl(); 
+
+        // ===================================================================================
+        // USER LOGIC STEP 2, 4, 5, 6: VALIDATE PREVIOUS CYCLE PENDING PREDICTION
+        // ===================================================================================
+        if (hist_struct.pending.is_active) {
             
-            // Retrieve the latest observation (CAM) data in memory
-            MovementData latest_data = hist_struct.history.back();
-            double last_time = latest_data.timestamp.dbl(); // This is Latest_CAM_Time(s)
+            // The newest CAM Time becomes the Target Prediction Time & Actual Ground Truth
+            double target_prediction_time = current_latest_cam_time; 
 
-            // SAFETY LOGIC 1: Prevent redundant predictions for the same latest data
-            if (last_time == hist_struct.last_used_absolute_time) {
-                continue; 
-            }
+            // Ensure simulation actually moved forward approx 1 second (min 0.5s safeguard)
+            if (target_prediction_time - hist_struct.pending.latest_cam_time >= 0.5) {
 
-            // SAFETY LOGIC 2: Ensure target is still active / has not left the map (2 Seconds Timeout)
-            if (t_sim - last_time <= 2.0) {
+                // Step 4: Extract the KF State Snapshot saved from the PREVIOUS cycle
+                std::vector<double> state = hist_struct.pending.kf_state_snapshot;
                 
-                // --- REAL-TIME PROJECTION PARADIGM ---
-                // Project the guess exactly 1 second into the future from the last CAM data
-                double target_prediction_time = last_time + 1.0;
+                // Calculate the exact time gap delta_t from the saved snapshot to current ground truth
+                double delta_t = target_prediction_time - hist_struct.pending.latest_cam_time; 
                 
-                // The Kalman Filter delta_t is the distance from the last known state to the target
-                double delta_t = target_prediction_time - last_time; 
-                if (delta_t < 0.01) delta_t = 0.01; // Safety fallback
+                // Extrapolate Prediction into the Target Time using Constant Velocity model logic
+                // Pred = current_pos + (current_vel * delta_t)
+                // state[0] = Lat, state[1] = Lon, state[2] = Vel_Lat, state[3] = Vel_Lon
+                double pred_lat = state[0] + (state[2] * delta_t);
+                double pred_lon = state[1] + (state[3] * delta_t);
 
-                // 1. Extrapolate Prediction into the Future
-                auto [pred_lat, pred_lon] = hist_struct.kf_state->predict(delta_t);
-                
-                // 2. Retrieve 4D State parameters to access Current Velocities
-                std::vector<double> state = hist_struct.kf_state->getState();
+                // Step 5: Calculate Absolute Error (AE) directly with current Real Ground Truth
+                double lat_ae = std::abs(pred_lat - current_latest_data.latitude);
+                double lon_ae = std::abs(pred_lon - current_latest_data.longitude);
+                double ae = std::sqrt((lat_ae * lat_ae) + (lon_ae * lon_ae));
 
-                // 3. Print to CSV with Standardized Columns
+                mSumAE += ae;
+                mCountAE++;
+
+                // Print to CSV. Processing_Time and Latest_CAM_Time use the PENDING values!
                 if (mPredictionLogFile.is_open()) {
                     mPredictionLogFile << std::fixed << std::setprecision(12)
-                                       << t_sim << ";"                     // Processing_Time(s)
-                                       << last_time << ";"                 // Latest_CAM_Time(s)
-                                       << targetId << ";"                  // Node_Target
-                                       << latest_data.latitude << ";"      // Actual_Lat (Ground Truth)
-                                       << latest_data.longitude << ";"     // Actual_Lon (Ground Truth)
-                                       << target_prediction_time << ";"    // Target_Prediction_Time(s)
-                                       << state[1] << ";"                  // KF_Vel_Lat
-                                       << state[2] << ";"                  // KF_Vel_Lon
-                                       << pred_lat << ";"                  // Pred_Lat
-                                       << pred_lon << std::endl;           // Pred_Lon
+                                       << hist_struct.pending.processing_time << ";"                     
+                                       << hist_struct.pending.latest_cam_time << ";"                 
+                                       << target_prediction_time << ";"    
+                                       << targetId << ";"                  
+                                       << current_latest_data.latitude << ";"      
+                                       << current_latest_data.longitude << ";"     
+                                       << state[2] << ";" << state[3] << ";"  // Recorded KF_Vel_Lat & Lon               
+                                       << pred_lat << ";" << pred_lon << ";"
+                                       << lat_ae << ";" << lon_ae << ";" << ae << std::endl;           
                 }
-
-                // Record this observation time so the system waits for new data in the next cycle
-                hist_struct.last_used_absolute_time = last_time; 
             }
+            // Deactivate the pending task after it is fulfilled
+            hist_struct.pending.is_active = false; 
         }
+
+        // ===================================================================================
+        // USER LOGIC STEP 1 & 4: RECORD PROCESSING TIME, BASE TIME, AND SNAPSHOT KF STATE
+        // ===================================================================================
+        hist_struct.pending.processing_time = t_sim; // E.g., 1.1
+        hist_struct.pending.latest_cam_time = current_latest_cam_time; // E.g., 0.838
+        
+        // Take a Snapshot of the 4D KF state at this exact moment and store it in the Pending Buffer
+        hist_struct.pending.kf_state_snapshot = hist_struct.kf_state->getState();
+        
+        // Mark the pending prediction as active, waiting for the next timer cycle to evaluate it
+        hist_struct.pending.is_active = true;
     }
     mPredictionLogFile.flush();
 }
@@ -234,6 +228,14 @@ void TrajektoriAppKFv1::runPredictions() {
 void TrajektoriAppKFv1::finish() {
     if (mLogFile.is_open()) mLogFile.close();
     cancelAndDelete(mLogTimer);
+
+    // Calculate and Print final MAE
+    if (mCountAE > 0 && mPredictionLogFile.is_open()) {
+        double mae_microdegree = mSumAE / mCountAE;
+        double mae_meter = mae_microdegree * 0.11132;
+        mPredictionLogFile << "\n;;;;;;;;;;;;MAE (microdegree);" << std::fixed << std::setprecision(12) << mae_microdegree << std::endl;
+        mPredictionLogFile << ";;;;;;;;;;;;MAE (meter);" << mae_meter << std::endl;
+    }
 
     if (mPredictionLogFile.is_open()) mPredictionLogFile.close();
     cancelAndDelete(mPredictionTimer);

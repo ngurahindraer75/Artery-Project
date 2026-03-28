@@ -12,26 +12,33 @@
 
 namespace artery {
 
-// Structure to record each CAM data point received by the observer
 struct MovementData {
-    long gen_delta_time_raw;       // Raw generationDeltaTime from ETSI satellite
-    double cam_received_time;      // Local time when CAM was received (seconds)
-    double calculated_delay;       // Network delay extracted from payload (seconds)
-    omnetpp::simtime_t timestamp;  // Absolute time reconstructed (CAM_Generation_Time)
+    long gen_delta_time_raw;       
+    double cam_received_time;      
+    double calculated_delay;       
+    omnetpp::simtime_t timestamp;  
     double latitude;
     double longitude;
     double speed_mps;
-    double heading_degree;         // Added to ensure data format consistency with KF 4D
+    double heading_degree;         
 };
 
-// Structure to buffer the movement history of each target node
+// --- USER LOGIC STEP 1 & 3: BUFFER FOR PENDING PREDICTION ---
+// Struct to hold the "Snapshot" and Training Data while waiting for the future
+struct PendingPrediction {
+    double processing_time;
+    double latest_cam_time;
+    std::vector<MovementData> train_data; 
+    bool is_active = false;
+};
+
 struct AgentHistory {
     std::deque<MovementData> history;
     omnetpp::simtime_t lastReceptionTime;
     bool hasNewData = false;
     
-    // Safety marker to prevent redundant extrapolation for the same latest CAM data
-    double last_used_absolute_time = -1.0; 
+    // The asynchronous prediction waiting to be validated in the next cycle
+    PendingPrediction pending; 
 };
 
 class TrajektoriApp : public ItsG5BaseService {
@@ -48,7 +55,7 @@ private:
     void logTrajectory();
     std::string getNodeType();
     
-    // Core function to execute Linear Regression real-time projection
+    // Core function to execute Linear Regression with Asynchronous Pipeline
     void runLinearRegression();
 
     omnetpp::cMessage* mLogTimer = nullptr;
@@ -57,10 +64,13 @@ private:
     
     std::ofstream mLogFile;
     std::map<long, AgentHistory> mOtherNodes;
-    const artery::VehicleDataProvider* mVehicleDataProvider = nullptr;
 
     omnetpp::cMessage* mPredictionTimer = nullptr;
     std::ofstream mCoefficientLogFile;
+
+    // Variables to accumulate Mean Absolute Error (MAE)
+    double mSumAE = 0.0;
+    long mCountAE = 0;
 };
 
 } // namespace artery

@@ -14,27 +14,33 @@
 
 namespace artery {
 
-// Structure to record each CAM data point received by the observer
 struct MovementData {
-    long gen_delta_time_raw;       // Raw generationDeltaTime from ETSI satellite
-    double cam_received_time;      // Local time when CAM was received (seconds)
-    double calculated_delay;       // Network delay extracted from payload (seconds)
-    omnetpp::simtime_t timestamp;  // Absolute time reconstructed (CAM_Generation_Time)
+    long gen_delta_time_raw;       
+    double cam_received_time;      
+    double calculated_delay;       
+    omnetpp::simtime_t timestamp;  
     double latitude;
     double longitude;
     double speed_mps;
-    double heading_degree;         // Added to ensure data format consistency
+    double heading_degree;         
 };
 
-// Structure to buffer the movement history without past prediction queues
+// --- USER LOGIC STEP 1 & 4: BUFFER FOR PENDING PREDICTION ---
+// Struct to hold the 4D KF State Snapshot while waiting for the future
+struct PendingPrediction {
+    double processing_time;
+    double latest_cam_time;
+    std::vector<double> kf_state_snapshot; 
+    bool is_active = false;
+};
+
 struct AgentHistory {
     std::deque<MovementData> history;
     omnetpp::simtime_t lastReceptionTime;
     bool hasNewData = false;
 
-    // Safety marker to prevent redundant extrapolation for the same latest CAM data
-    double last_used_absolute_time = -1.0; 
-
+    // The asynchronous prediction waiting to be validated in the next cycle
+    PendingPrediction pending; 
     std::unique_ptr<KalmanFilter4D> kf_state;
 };
 
@@ -52,7 +58,7 @@ private:
     void logTrajectory();
     std::string getNodeType();
     
-    // Core function to execute instant prediction printing
+    // Core function to execute Kalman Filter with Asynchronous Pipeline
     void runPredictions();
 
     omnetpp::cMessage* mLogTimer = nullptr;
@@ -64,6 +70,10 @@ private:
 
     omnetpp::cMessage* mPredictionTimer = nullptr;
     std::ofstream mPredictionLogFile;
+    
+    // Variables to accumulate Mean Absolute Error (MAE)
+    double mSumAE = 0.0;
+    long mCountAE = 0;
 };
 
 } // namespace artery
