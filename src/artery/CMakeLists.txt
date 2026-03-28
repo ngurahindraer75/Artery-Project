@@ -5,9 +5,12 @@ add_library(core SHARED
     application/CaService.cc
     application/CamLogger.cc
     application/TrajektoriApp.cc
+    application/TrajektoriAppKFv1.cc
     application/TrajektoriAppVer2.cc
     application/TrajektoriAppVerIND.cc
+    application/TrajektoriAppKF4D.cc
     application/KalmanFilter2D.h
+    application/KalmanFilter4D.h
     application/KalmanFilterIND.h
     application/DenmObject.cc
     application/DenService.cc

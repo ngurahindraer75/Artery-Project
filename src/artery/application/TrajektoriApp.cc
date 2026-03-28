@@ -1,4 +1,4 @@
-#include "TrajektoriApp.h"
+#include "artery/application/TrajektoriApp.h"
 #include "artery/application/VehicleDataProvider.h"
 #include "artery/application/CaService.h"
 #include "artery/application/Middleware.h"
@@ -14,272 +14,270 @@ using namespace omnetpp;
 
 Define_Module(TrajektoriApp);
 
-std::string TrajektoriApp::getNodeType()
-{
+std::string TrajektoriApp::getNodeType() {
     std::string type = getParentModule()->getNedTypeName();
     if (type.find("Vehicle") != std::string::npos) return "Vehicle";
     if (type.find("Person") != std::string::npos) return "Person";
     return "Unknown";
 }
 
-void TrajektoriApp::initialize()
-{
+void TrajektoriApp::initialize() {
     ItsG5BaseService::initialize();
+
     mLogInterval = par("logInterval");
     std::string nodeType = getNodeType();
 
+    // 1. Setup Raw CAM Log File
     std::string logFilename;
     if (nodeType == "Vehicle") {
-        logFilename = "results/CAM_data_from_car.csv";
+        logFilename = "results/CAM_data_from_car_RL.csv";
     } else if (nodeType == "Person") {
-        logFilename = "results/CAM_data_from_person.csv";
+        logFilename = "results/CAM_data_from_person_RL.csv";
     } else {
         logFilename = "results/CAM_data_unknown.csv";
     }
-    
+
     mLogFile.open(logFilename, std::ios::out | std::ios::app);
     if (mLogFile.tellp() == 0) {
-        mLogFile << "Time_s;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Target_Speed_Raw" << std::endl;
+        mLogFile << "GenDeltaTime_Raw;CAM_Received_Time;Calculated_Delay;CAM_Generation_Time;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Target_Speed_Raw;Target_Heading_Raw" << std::endl;
     }
-    
+
     mLogTimer = new cMessage("logTimer");
     scheduleAt(simTime() + mLogInterval, mLogTimer);
+
     mCamReceivedSignal = registerSignal("CamReceived");
     getParentModule()->subscribe(mCamReceivedSignal, this);
 
+    // 2. Setup Prediction Log File (Using 3 Real-Time Time Pillars)
     std::string coefficientLogFilename;
     if (nodeType == "Vehicle") {
-        coefficientLogFilename = "results/coefficient_log_from_car.csv";
-    } else {
-        coefficientLogFilename = "results/coefficient_log_from_person.csv";
+        coefficientLogFilename = "results/coefficient_log_from_car_RL.csv";
+    } else { 
+        coefficientLogFilename = "results/coefficient_log_from_person_RL.csv";
     }
-    
+
     mCoefficientLogFile.open(coefficientLogFilename, std::ios::out | std::ios::app);
     if (mCoefficientLogFile.tellp() == 0) {
-        // Header disamakan persis dengan format komparasi
-        mCoefficientLogFile << "Time_prediction(s);Time_absolut_s;Node_Target;Actual_Lat;Actual_Lon;Slope_Lat;Intercept_Lat;Pred_Lat;Slope_Lon;Intercept_Lon;Pred_Lon;Lat_AE;Lon_AE;AE" << std::endl;
+        // --- CSV HEADER UPDATED (3 Standardized Time Pillars) ---
+        mCoefficientLogFile << "Processing_Time(s);Latest_CAM_Time(s);Node_Target;Actual_Lat;Actual_Lon;Target_Prediction_Time(s);Slope_Lat;Intercept_Lat;Pred_Lat;Slope_Lon;Intercept_Lon;Pred_Lon" << std::endl;
     }
-    
+
     mPredictionTimer = new cMessage("predictionTimer");
     scheduleAt(simTime() + 1.0, mPredictionTimer);
 }
 
-void TrajektoriApp::handleMessage(cMessage* msg)
-{
+void TrajektoriApp::handleMessage(cMessage* msg) {
     if (msg == mLogTimer) {
         logTrajectory();
         scheduleAt(simTime() + mLogInterval, mLogTimer);
-        return;
+        return; 
     }
     if (msg == mPredictionTimer) {
-        logCoefficients(); 
-        scheduleAt(simTime() + 1.0, mPredictionTimer);
-        return;
+        runLinearRegression(); 
+        scheduleAt(simTime() + 1.0, mPredictionTimer); 
+        return; 
     }
     delete msg;
 }
 
-void TrajektoriApp::receiveSignal(cComponent* source, simsignal_t signalID, cObject* obj, cObject* details)
-{
+void TrajektoriApp::receiveSignal(cComponent* source, simsignal_t signalID, cObject* obj, cObject* details) {
     if (signalID != mCamReceivedSignal) return;
+
     auto ca_obj = dynamic_cast<CaObject*>(obj);
     if (!ca_obj) return;
-    
-    const cPacket* packet = dynamic_cast<const cPacket*>(details);
-    simtime_t creationTime = packet ? packet->getCreationTime() : simTime();
+
     const auto& cam = *ca_obj->asn1();
-    long stationId = cam.header.stationID;
-    
+    long targetId = cam.header.stationID;
+
     const auto& basic = cam.cam.camParameters.basicContainer;
     const auto& hfc = cam.cam.camParameters.highFrequencyContainer;
     if (hfc.present != HighFrequencyContainer_PR_basicVehicleContainerHighFrequency) return;
-    
-    const auto& bvc = hfc.choice.basicVehicleContainerHighFrequency;
-    MovementData data;
-    data.timestamp = creationTime;
-    data.latitude = static_cast<double>(basic.referencePosition.latitude)/10;
-    data.longitude = static_cast<double>(basic.referencePosition.longitude)/10;
-    data.speed_mps = static_cast<double>(bvc.speed.speedValue);
 
-    AgentHistory& history = mOtherNodes[stationId];
+    const auto& bvc = hfc.choice.basicVehicleContainerHighFrequency;
+
+    long genDeltaTime_ms = cam.cam.generationDeltaTime; 
+    simtime_t time_receive = simTime();
+    long long current_time_ms = time_receive.inUnit(SIMTIME_MS);
+    
+    static long long tai_offset_mod = -1;
+    if (tai_offset_mod == -1) {
+        const cPacket* packet = dynamic_cast<const cPacket*>(details);
+        long long true_creation_ms = (packet ? packet->getCreationTime() : simTime()).inUnit(SIMTIME_MS);
+        tai_offset_mod = (genDeltaTime_ms - true_creation_ms) % 65536;
+        if (tai_offset_mod < 0) tai_offset_mod += 65536;
+    }
+    
+    long current_mod = (current_time_ms + tai_offset_mod) % 65536;
+    long delay_ms = current_mod - genDeltaTime_ms;
+    if (delay_ms < 0) delay_ms += 65536; 
+    
+    double time_send_absolut = (current_time_ms - delay_ms) / 1000.0; 
+    
+    MovementData data;
+    data.gen_delta_time_raw = genDeltaTime_ms; 
+    data.cam_received_time = current_time_ms / 1000.0; 
+    data.calculated_delay = delay_ms / 1000.0; 
+    data.timestamp = time_send_absolut; 
+    
+    data.latitude = static_cast<double>(basic.referencePosition.latitude) / 10.0;
+    data.longitude = static_cast<double>(basic.referencePosition.longitude) / 10.0;
+    data.speed_mps = static_cast<double>(bvc.speed.speedValue);
+    data.heading_degree = static_cast<double>(bvc.heading.headingValue) / 10.0;
+
+    AgentHistory& history = mOtherNodes[targetId];
     history.history.push_back(data);
-    history.lastReceptionTime = simTime();
+    history.lastReceptionTime = time_receive;
     history.hasNewData = true;
 
-    while (!history.history.empty() && (simTime() - history.history.front().timestamp > 5.0)) {
+    while (!history.history.empty() && (time_receive.dbl() - history.history.front().timestamp.dbl() > 5.0)) {
         history.history.pop_front();
     }
 }
 
-void TrajektoriApp::logTrajectory()
-{
+void TrajektoriApp::logTrajectory() {
     auto& vdp = getFacilities().get_const<VehicleDataProvider>();
     long myId = vdp.station_id();
+
     if (!mLogFile.is_open()) return;
 
     for (auto& [targetId, targetHist] : mOtherNodes) {
         if (targetHist.hasNewData) {
             if (targetHist.history.empty()) continue;
+
             MovementData latest = targetHist.history.back();
             mLogFile << std::fixed << std::setprecision(12)
-                     << latest.timestamp.dbl() << ";" << myId << ";" << targetId << ";"
-                     << latest.latitude << ";" << latest.longitude << ";" << latest.speed_mps << std::endl;
+                     << latest.gen_delta_time_raw << ";"  
+                     << latest.cam_received_time << ";"
+                     << latest.calculated_delay << ";"
+                     << latest.timestamp.dbl() << ";" 
+                     << myId << ";"
+                     << targetId << ";"
+                     << latest.latitude << ";"
+                     << latest.longitude << ";"
+                     << latest.speed_mps << ";"
+                     << latest.heading_degree << std::endl;
+
             targetHist.hasNewData = false;
         }
     }
     mLogFile.flush();
 }
 
-void TrajektoriApp::logCoefficients()
-{
-    simtime_t now = simTime();
-    double horizon_s = 1.0; 
-    double target_time = now.dbl() + horizon_s;
+void TrajektoriApp::runLinearRegression() {
+    double t_sim = simTime().dbl();
 
-    for (auto& [targetId, targetHist] : mOtherNodes)
-    {
-        // 1. CEK TIMEOUT
-        if ((now - targetHist.lastReceptionTime).dbl() > 2.0) {
-            targetHist.pending_predictions.clear(); 
+    for (auto& pair : mOtherNodes) {
+        long targetId = pair.first;
+        auto& hist_struct = pair.second;
+        auto& hist = hist_struct.history;
+
+        if (hist.empty()) continue;
+
+        // Retrieve the latest observation (CAM) data in memory
+        MovementData latest_data = hist.back();
+        double last_time = latest_data.timestamp.dbl(); // This is Latest_CAM_Time(s)
+
+        // SAFETY LOGIC: Prevent redundant predictions for the same latest data
+        if (last_time == hist_struct.last_used_absolute_time) {
             continue;
         }
 
-        // 2. HITUNG KOEFISIEN RL & SIMPAN SEBAGAI PENDING PREDICTION
-        std::vector<MovementData> points_1s;
-        for (const auto& point : targetHist.history) {
-            if (now - point.timestamp <= 1.0 && now > point.timestamp) { 
-                points_1s.push_back(point);
-            }
-        }
-        if (points_1s.size() < 2 && targetHist.history.size() >= 2) {
-            points_1s.clear();
-            points_1s.push_back(targetHist.history[targetHist.history.size() - 2]);
-            points_1s.push_back(targetHist.history.back());
-        }
+        // Ensure target is still active / has not left the map (2 Seconds Timeout)
+        if (t_sim - last_time <= 2.0) {
+            
+            // --- REAL-TIME PROJECTION PARADIGM ---
+            // Project the guess exactly 1 second into the future from the last CAM data
+            double target_prediction_time = last_time + 1.0;
 
-        if (points_1s.size() >= 2) {
-            RegressionCoefficients coeffs = calculateCoefficients(points_1s);
-            if (coeffs.valid) {
-                PendingPrediction p;
-                p.target_time = target_time;
-                p.creation_time = now.dbl();
-                p.slope_lat = coeffs.b_lat;
-                p.intercept_lat = coeffs.a_lat;
-                p.slope_lon = coeffs.b_lon;
-                p.intercept_lon = coeffs.a_lon;
-                
-                targetHist.pending_predictions.push_back(p);
-            }
-        }
+            // Define 1-Second Training Window (exactly 1 second before the latest data)
+            double t_start = last_time - 1.0; 
+            double t_end = last_time;
 
-        // 3. DELAYED EVALUATION (Mengevaluasi Prediksi Masa Lalu dengan Time_absolut)
-        auto it = targetHist.pending_predictions.begin();
-        while (it != targetHist.pending_predictions.end()) {
-            if (it->target_time <= now.dbl()) {
-                
-                MovementData closest_actual;
-                double min_time_diff = 9999.0;
-                bool found_actual = false;
+            std::vector<MovementData> train_data;
+            MovementData fallback_point;
+            bool has_fallback = false;
 
-                for (const auto& point : targetHist.history) {
-                    double time_diff = std::abs(point.timestamp.dbl() - it->target_time);
-                    if (time_diff < min_time_diff) {
-                        min_time_diff = time_diff;
-                        closest_actual = point;
-                        found_actual = true;
-                    }
+            for (auto& pt : hist) {
+                if (pt.timestamp.dbl() >= t_start && pt.timestamp.dbl() <= t_end) {
+                    train_data.push_back(pt);
                 }
-
-                // Proteksi dari Phantom Evaluation (0.5s toleransi)
-                if (found_actual && min_time_diff <= 0.5) {
-                    double time_absolut = closest_actual.timestamp.dbl();
-                    
-                    // PERUBAHAN: Pengali menggunakan time_absolut (Persis seperti KF)
-                    double pred_lat = it->intercept_lat + (it->slope_lat * time_absolut);
-                    double pred_lon = it->intercept_lon + (it->slope_lon * time_absolut);
-                    
-                    double lat_ae = std::abs(closest_actual.latitude - pred_lat);
-                    double lon_ae = std::abs(closest_actual.longitude - pred_lon);
-                    double ae = std::sqrt((lat_ae * lat_ae) + (lon_ae * lon_ae)); 
-                    
-                    mTotalAE += ae;
-                    mCountAE++;
-                    
-                    mCoefficientLogFile << std::fixed << std::setprecision(12)
-                                        << it->target_time << ";"
-                                        << time_absolut << ";" 
-                                        << targetId << ";"
-                                        << closest_actual.latitude << ";"
-                                        << closest_actual.longitude << ";"
-                                        << it->slope_lat << ";"
-                                        << it->intercept_lat << ";"
-                                        << pred_lat << ";"
-                                        << it->slope_lon << ";"
-                                        << it->intercept_lon << ";"
-                                        << pred_lon << ";"
-                                        << lat_ae << ";"
-                                        << lon_ae << ";"
-                                        << ae << std::endl;
+                if (pt.timestamp.dbl() < t_start) {
+                    fallback_point = pt;
+                    has_fallback = true;
                 }
-                it = targetHist.pending_predictions.erase(it);
-            } else {
-                ++it;
             }
+
+            // If the node has just appeared and lacks data, use the oldest 1 data as an anchor
+            if (train_data.size() < 2 && has_fallback) {
+                train_data.insert(train_data.begin(), fallback_point);
+            }
+
+            // Absolute requirement for Linear Regression: Needs at least 2 points to draw a line
+            if (train_data.size() < 2) continue;
+
+            // Calculate Linear Regression (Least Squares Method)
+            double n = train_data.size();
+            double sum_x = 0, sum_y_lat = 0, sum_y_lon = 0;
+            double sum_xx = 0, sum_xy_lat = 0, sum_xy_lon = 0;
+
+            for (auto& pt : train_data) {
+                double x = pt.timestamp.dbl();
+                double y_lat = pt.latitude;
+                double y_lon = pt.longitude;
+
+                sum_x += x;
+                sum_y_lat += y_lat;
+                sum_y_lon += y_lon;
+                sum_xx += x * x;
+                sum_xy_lat += x * y_lat;
+                sum_xy_lon += x * y_lon;
+            }
+
+            double denominator = n * sum_xx - sum_x * sum_x;
+            if (std::abs(denominator) < 1e-9) continue;
+
+            double b_lat = (n * sum_xy_lat - sum_x * sum_y_lat) / denominator;
+            double a_lat = (sum_y_lat - b_lat * sum_x) / n;
+            
+            double b_lon = (n * sum_xy_lon - sum_x * sum_y_lon) / denominator;
+            double a_lon = (sum_y_lon - b_lon * sum_x) / n;
+
+            // Perform the Final Prediction to target_prediction_time
+            double pred_lat = a_lat + b_lat * target_prediction_time;
+            double pred_lon = a_lon + b_lon * target_prediction_time;
+
+            // Save the output to the CSV file
+            if (mCoefficientLogFile.is_open()) {
+                mCoefficientLogFile << std::fixed << std::setprecision(12)
+                                    << t_sim << ";"                     // Processing_Time(s)
+                                    << last_time << ";"                 // Latest_CAM_Time(s)
+                                    << targetId << ";"                  // Node_Target
+                                    << latest_data.latitude << ";"      // Actual_Lat (Ground Truth)
+                                    << latest_data.longitude << ";"     // Actual_Lon (Ground Truth)
+                                    << target_prediction_time << ";"    // Target_Prediction_Time(s)
+                                    << b_lat << ";"                     // Slope_Lat
+                                    << a_lat << ";"                     // Intercept_Lat
+                                    << pred_lat << ";"                  // Pred_Lat
+                                    << b_lon << ";"                     // Slope_Lon
+                                    << a_lon << ";"                     // Intercept_Lon
+                                    << pred_lon << std::endl;           // Pred_Lon
+            }
+            
+            // Record this observation time so the system waits for new data in the next cycle
+            hist_struct.last_used_absolute_time = last_time; 
         }
     }
     mCoefficientLogFile.flush();
 }
 
-RegressionCoefficients TrajektoriApp::calculateCoefficients(const std::vector<MovementData>& points)
-{
-    RegressionCoefficients result;
-    if (points.size() < 2) return result;
-
-    double n = points.size();
-    double sum_t = 0, sum_lat = 0, sum_lon = 0;
-    double sum_t_sq = 0, sum_t_lat = 0, sum_t_lon = 0;
-
-    for (const auto& p : points) {
-        double t = p.timestamp.dbl();
-        sum_t += t;
-        sum_lat += p.latitude;
-        sum_lon += p.longitude;
-        sum_t_sq += t * t;
-        sum_t_lat += t * p.latitude;
-        sum_t_lon += t * p.longitude;
-    }
-
-    double denominator = n * sum_t_sq - sum_t * sum_t;
-    if (std::abs(denominator) < 1e-9) return result;
-
-    result.b_lat = (n * sum_t_lat - sum_t * sum_lat) / denominator;
-    result.a_lat = (sum_lat - result.b_lat * sum_t) / n;
-    result.b_lon = (n * sum_t_lon - sum_t * sum_lon) / denominator;
-    result.a_lon = (sum_lon - result.b_lon * sum_t) / n;
-    
-    result.valid = true;
-    return result;
-}
-
-void TrajektoriApp::finish()
-{
+void TrajektoriApp::finish() {
     if (mLogFile.is_open()) mLogFile.close();
     cancelAndDelete(mLogTimer);
 
-    if (mCoefficientLogFile.is_open()) {
-        // Cetak kalkulasi MAE otomatis di baris bawah (Sama seperti KF)
-        if (mCountAE > 0) {
-            double mae_microdegree = mTotalAE / mCountAE;
-            double mae_meter = mae_microdegree * 0.11132;
-            
-            mCoefficientLogFile << std::endl; 
-            mCoefficientLogFile << ";;;;;;;;;;;;MAE (microdegree);" << std::fixed << std::setprecision(12) << mae_microdegree << std::endl;
-            mCoefficientLogFile << ";;;;;;;;;;;;MAE (meter);" << mae_meter << std::endl;
-        }
-        mCoefficientLogFile.close();
-    }
+    if (mCoefficientLogFile.is_open()) mCoefficientLogFile.close();
     cancelAndDelete(mPredictionTimer);
-    
+
     ItsG5BaseService::finish();
 }
+
 } // namespace artery
