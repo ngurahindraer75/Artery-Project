@@ -1,11 +1,4 @@
-/**
- * @file TrajektoriAppVer2.cc
- * @brief Trajectory Prediction Application using Linear Regression (Sliding Window).
- * @details Implements ETSI ITS-G5 CAM reception, shortest-path modulus time synchronization,
- * and Ordinary Least Squares (OLS) regression for trajectory extrapolation.
- */
-
-#include "artery/application/TrajektoriAppVer2.h"
+#include "artery/application/TrajektoriAppKFv4.h"
 #include "artery/application/VehicleDataProvider.h"
 #include "artery/application/CaService.h"
 #include "artery/application/Middleware.h"
@@ -15,15 +8,14 @@
 #include <cmath>
 #include <iomanip>
 #include <limits>
-#include <vector>
 
 namespace artery {
 using namespace omnetpp;
 
-Define_Module(TrajektoriAppVer2);
+Define_Module(TrajektoriAppKFv4);
 
-TrajektoriAppVer2::~TrajektoriAppVer2() {
-    // Safely close all file streams to prevent data corruption upon simulation termination
+TrajektoriAppKFv4::~TrajektoriAppKFv4() {
+    // Safely close all logs to prevent data corruption on SUMO crash
     if (mCamLogFile.is_open()) mCamLogFile.close();
     if (mPredLog1s.is_open()) mPredLog1s.close();
     if (mPredLog2s.is_open()) mPredLog2s.close();
@@ -39,68 +31,67 @@ TrajektoriAppVer2::~TrajektoriAppVer2() {
     }
 }
 
-std::string TrajektoriAppVer2::getNodeType() {
+std::string TrajektoriAppKFv4::getNodeType() {
     std::string type = getParentModule()->getNedTypeName();
     if (type.find("Vehicle") != std::string::npos) return "Vehicle";
     if (type.find("Person") != std::string::npos) return "Person";
     return "Unknown";
 }
 
-void TrajektoriAppVer2::initialize() {
+void TrajektoriAppKFv4::initialize() {
     ItsG5BaseService::initialize();
     mLogInterval = par("logInterval");
 
     std::string nodeType = getNodeType();
     std::string targetLabel = (nodeType == "Vehicle") ? "pedestrian_prediction" : "vehicle_prediction";
 
-    // 1. Initialize Raw CAM Data Log
-    mCamLogFile.open("results/RL_CAM_data_" + targetLabel + "_v2.csv", std::ios::out | std::ios::app);
+    // 1. Initialize Raw CAM Data Log (Output updated to _v4)
+    mCamLogFile.open("results/KF_CAM_data_" + targetLabel + "_v4.csv", std::ios::out | std::ios::app);
     if (mCamLogFile.tellp() == 0) {
         mCamLogFile << "GenDeltaTime_Raw;CAM_Received_Time;Calculated_Delay;CAM_Generation_Time;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Target_Speed_Raw;Target_Heading_Raw\n";
     }
 
-    // 2. Initialize Prediction Logs for all 3 Horizons
+    // 2. Initialize Prediction Logs for all 3 Horizons (Output updated to _v4)
     auto initPredLog = [&](std::ofstream& stream, const std::string& horizonStr) {
-        stream.open("results/RL_" + horizonStr + "s_coefficient_log_" + targetLabel + "_v2.csv", std::ios::out);
-        stream << "Processing_Time(s);Latest_CAM_Time(s);Base_CAM_Lat;Base_CAM_Lon;Target_Prediction_Time(s);Node_Target;Actual_Lat;Actual_Lon;Slope_Lat;Intercept_Lat;Pred_Lat;Slope_Lon;Intercept_Lon;Pred_Lon;Lat_AE;Lon_AE;AE\n";
+        stream.open("results/KF_" + horizonStr + "s_coefficient_log_" + targetLabel + "_v4.csv", std::ios::out);
+        stream << "Processing_Time(s);Latest_CAM_Time(s);Base_CAM_Lat;Base_CAM_Lon;Target_Prediction_Time(s);Node_Target;Actual_Lat;Actual_Lon;KF_PosX;KF_PosY;KF_VelX;KF_VelY;Pred_Lat;Pred_Lon;Lat_AE;Lon_AE;AE\n";
     };
 
     initPredLog(mPredLog1s, "1");
     initPredLog(mPredLog2s, "2");
     initPredLog(mPredLog3s, "3");
 
-    // Initialize timers
     mLogTimer = new cMessage("logTimer");
     scheduleAt(simTime() + mLogInterval, mLogTimer);
 
     mCamReceivedSignal = registerSignal("CamReceived");
     getParentModule()->subscribe(mCamReceivedSignal, this);
 
-    // Schedule the first snapshot generation trigger
+    // Schedule snapshot generation
     mPredictionTimer = new cMessage("predictionTimer");
     scheduleAt(simTime() + 1.0, mPredictionTimer);
 }
 
-void TrajektoriAppVer2::handleMessage(cMessage* msg) {
+void TrajektoriAppKFv4::handleMessage(cMessage* msg) {
     if (msg == mLogTimer) {
         logTrajectory();
         scheduleAt(simTime() + mLogInterval, mLogTimer);
         return;
     }
     if (msg == mPredictionTimer) {
-        takeRlSnapshot();
+        takeKfSnapshot();
         scheduleAt(simTime() + 1.0, mPredictionTimer);
         return;
     }
     delete msg;
 }
 
-void TrajektoriAppVer2::receiveSignal(cComponent* source, simsignal_t signalID, cObject* obj, cObject* details) {
+void TrajektoriAppKFv4::receiveSignal(cComponent* source, simsignal_t signalID, cObject* obj, cObject* details) {
     if (signalID != mCamReceivedSignal) return;
 
     auto ca_obj = dynamic_cast<CaObject*>(obj);
     
-    // Safety guard against segmentation faults during node destruction
+    // SAFETY GUARD: Prevent Segfault when node is destroyed
     if (!ca_obj) return;
 
     const auto& cam = *ca_obj->asn1();
@@ -109,16 +100,13 @@ void TrajektoriAppVer2::receiveSignal(cComponent* source, simsignal_t signalID, 
     const auto& basic = cam.cam.camParameters.basicContainer;
     const auto& hfc = cam.cam.camParameters.highFrequencyContainer;
     
-    // Ensure we are processing Basic Vehicle Container (High Frequency)
     if (hfc.present != HighFrequencyContainer_PR_basicVehicleContainerHighFrequency) return;
     const auto& bvc = hfc.choice.basicVehicleContainerHighFrequency;
 
-    // --- BASELINE TIME SYNCHRONIZATION LOGIC ---
     long genDeltaTime_ms = cam.cam.generationDeltaTime;
     simtime_t time_receive = simTime();
     long long current_time_ms = time_receive.inUnit(SIMTIME_MS);
 
-    // Calculate TAI offset modulation (Executed only once per observer)
     static long long tai_offset_mod = -1;
     if (tai_offset_mod == -1) {
         const cPacket* packet = dynamic_cast<const cPacket*>(details);
@@ -129,22 +117,9 @@ void TrajektoriAppVer2::receiveSignal(cComponent* source, simsignal_t signalID, 
 
     long current_mod = (current_time_ms + tai_offset_mod) % 65536;
     long delay_ms = current_mod - genDeltaTime_ms;
-    
-    // BUGFIX: Shortest path modulus correction for 65s wrap-around anomaly
-    // Handles scenarios where standard 16-bit ETSI timestamps reset to 0
-    if (delay_ms < -32768) {
-        delay_ms += 65536; // Target clock just wrapped around
-    } else if (delay_ms > 32768) {
-        delay_ms -= 65536; // Observer clock just wrapped around
-    }
-    
-    // Failsafe for minor floating-point or OMNeT++ scheduling inaccuracies
-    if (delay_ms < 0) {
-        delay_ms = 0; 
-    }
+    if (delay_ms < 0) delay_ms += 65536;
 
     double time_send_absolut = (current_time_ms - delay_ms) / 1000.0;
-    // --------------------------------------------------------
 
     MovementData data;
     data.gen_delta_time_raw = genDeltaTime_ms;
@@ -152,7 +127,7 @@ void TrajektoriAppVer2::receiveSignal(cComponent* source, simsignal_t signalID, 
     data.calculated_delay = delay_ms / 1000.0;
     data.timestamp = time_send_absolut;
     
-    // Maintain absolute microdegrees for Linear Regression
+    // Values extracted here are in MICRODEGREES
     data.latitude = static_cast<double>(basic.referencePosition.latitude) / 10.0;
     data.longitude = static_cast<double>(basic.referencePosition.longitude) / 10.0;
     data.speed_mps = static_cast<double>(bvc.speed.speedValue);
@@ -160,13 +135,45 @@ void TrajektoriAppVer2::receiveSignal(cComponent* source, simsignal_t signalID, 
 
     AgentHistory& history = mOtherNodes[targetId];
 
+    if (!history.is_ref_set) {
+        history.ref_lat = data.latitude;
+        history.ref_lon = data.longitude;
+        history.is_ref_set = true;
+        
+        // DYNAMIC KF TUNING LOGIC 
+        // If observer is Vehicle, target is Pedestrian (High uncertainty: Q = 15.0)
+        // If observer is Person, target is Vehicle (Low uncertainty: Q = 2.0)
+        double q_tuning_factor = (getNodeType() == "Vehicle") ? 15.0 : 2.0;
+
+        history.kf_state = std::make_unique<KalmanFilter4D>(q_tuning_factor); 
+        history.kf_state->init({0.0, 0.0, 0.0, 0.0}); 
+    }
+
+    double local_x, local_y;
+    latLonToCartesian(data.latitude, data.longitude, history.ref_lat, history.ref_lon, local_x, local_y);
+    data.local_x = local_x;
+    data.local_y = local_y;
+
+    double dt = 0.1;
+    if (!history.history.empty()) {
+        dt = data.timestamp.dbl() - history.history.back().timestamp.dbl();
+    }
+    
+    if (dt > 0.0 && history.kf_state) {
+        history.kf_state->predict(dt); 
+    }
+    
+    if (history.kf_state) {
+        std::vector<double> measurement = {local_x, local_y};
+        history.kf_state->update(measurement);
+    }
+
     history.history.push_back(data);
     history.lastReceptionTime = time_receive;
     history.hasNewData = true;
 
-    // MEMORY MANAGEMENT: Bound the tracking history 
-    // Kept slightly larger (e.g., 40) to accommodate the 1.2s sliding window even at high Hz
-    if (history.history.size() > 40) {
+    // MEMORY LEAK PREVENTION: Bound the history size.
+    if (history.history.size() > 20) {
         history.history.pop_front();
     }
 
@@ -174,7 +181,7 @@ void TrajektoriAppVer2::receiveSignal(cComponent* source, simsignal_t signalID, 
     evaluatePendingPredictions(targetId, history);
 }
 
-void TrajektoriAppVer2::evaluatePendingPredictions(long targetId, AgentHistory& hist_struct) {
+void TrajektoriAppKFv4::evaluatePendingPredictions(long targetId, AgentHistory& hist_struct) {
     if (hist_struct.history.empty()) return;
     
     const MovementData& current_cam = hist_struct.history.back();
@@ -184,17 +191,16 @@ void TrajektoriAppVer2::evaluatePendingPredictions(long targetId, AgentHistory& 
     while (it != hist_struct.pending_queue.end()) {
         bool all_done = true;
         
-        // Inline lambda helper to evaluate specific prediction horizons cleanly
+        // Inline helper to evaluate specific horizon cleanly
         auto evaluate_horizon = [&](double horizon, bool& is_done, std::ofstream& logFile, double& sumAE, long& countAE) {
             if (is_done) return;
             
             double ideal_target_time = it->latest_cam_time + horizon;
             
-            // Priority 1 & Priority 2 Time Alignment: Executed precisely upon CAM arrival
+            // Priority 1 & Priority 2 Alignment executed at the exact moment of CAM arrival
             if (current_time >= ideal_target_time) {
                 const MovementData* best_match = &current_cam;
                 
-                // Select the nearest neighbor CAM to the ideal target time
                 if (current_time > ideal_target_time && hist_struct.history.size() > 1) {
                     const MovementData& prev_cam = hist_struct.history[hist_struct.history.size() - 2];
                     double diff_after = current_time - ideal_target_time;
@@ -207,12 +213,20 @@ void TrajektoriAppVer2::evaluatePendingPredictions(long targetId, AgentHistory& 
                 double target_prediction_time = best_match->timestamp.dbl();
                 double dt_predict = target_prediction_time - it->latest_cam_time;
                 
-                // Linear Regression Prediction Equation: Y = m*X + C
-                // X is the relative time difference (dt_predict)
-                double pred_lat = (it->slope_lat * dt_predict) + it->intercept_lat;
-                double pred_lon = (it->slope_lon * dt_predict) + it->intercept_lon;
+                // Extract KF state (Cartesian coordinates in meters and m/s)
+                double state_x = it->kf_state_snapshot[0];
+                double state_y = it->kf_state_snapshot[1];
+                double vel_x = it->kf_state_snapshot[2];
+                double vel_y = it->kf_state_snapshot[3];
                 
-                // Absolute Error (AE) Calculation utilizing Euclidean distance
+                // Cartesian Extrapolation
+                double pred_local_x = state_x + (vel_x * dt_predict);
+                double pred_local_y = state_y + (vel_y * dt_predict);
+                
+                double pred_lat, pred_lon;
+                cartesianToLatLon(pred_local_x, pred_local_y, hist_struct.ref_lat, hist_struct.ref_lon, pred_lat, pred_lon);
+                
+                // AE Calculation
                 double lat_ae = std::abs(pred_lat - best_match->latitude);
                 double lon_ae = std::abs(pred_lon - best_match->longitude);
                 double ae = std::sqrt((lat_ae * lat_ae) + (lon_ae * lon_ae));
@@ -228,8 +242,8 @@ void TrajektoriAppVer2::evaluatePendingPredictions(long targetId, AgentHistory& 
                             << target_prediction_time << ";" 
                             << targetId << ";"
                             << best_match->latitude << ";" << best_match->longitude << ";"
-                            << it->slope_lat << ";" << it->intercept_lat << ";" << pred_lat << ";"
-                            << it->slope_lon << ";" << it->intercept_lon << ";" << pred_lon << ";"
+                            << state_x << ";" << state_y << ";" << vel_x << ";" << vel_y << ";"
+                            << pred_lat << ";" << pred_lon << ";"
                             << lat_ae << ";" << lon_ae << ";" << ae << "\n";
                 }
                 is_done = true; 
@@ -238,17 +252,16 @@ void TrajektoriAppVer2::evaluatePendingPredictions(long targetId, AgentHistory& 
             }
         };
         
-        // Execute evaluation for 1s, 2s, and 3s horizons
         evaluate_horizon(1.0, it->eval_1s_done, mPredLog1s, mSumAe1s, mCountAe1s);
         evaluate_horizon(2.0, it->eval_2s_done, mPredLog2s, mSumAe2s, mCountAe2s);
         evaluate_horizon(3.0, it->eval_3s_done, mPredLog3s, mSumAe3s, mCountAe3s);
         
-        // Timeout Cleanup: Drop snapshots if Target stops transmitting CAMs
+        // Timeout Cleanup: Drop snapshots if no CAM arrives for a long time
         if (current_time > it->latest_cam_time + 4.5) {
             all_done = true;
         }
         
-        // Destroy snapshot from RAM immediately when all configured horizons are evaluated
+        // Destroy snapshot from RAM immediately when all horizons are evaluated
         if (all_done) {
             it = hist_struct.pending_queue.erase(it);
         } else {
@@ -257,7 +270,7 @@ void TrajektoriAppVer2::evaluatePendingPredictions(long targetId, AgentHistory& 
     }
 }
 
-void TrajektoriAppVer2::logTrajectory() {
+void TrajektoriAppKFv4::logTrajectory() {
     try {
         auto facilities = getFacilities();
         auto& vdp = facilities.get_const<VehicleDataProvider>();
@@ -286,78 +299,36 @@ void TrajektoriAppVer2::logTrajectory() {
     } catch (...) { return; }
 }
 
-void TrajektoriAppVer2::takeRlSnapshot() {
+void TrajektoriAppKFv4::takeKfSnapshot() {
     double t_sim = simTime().dbl();
 
     for (auto& pair : mOtherNodes) {
         auto& hist_struct = pair.second;
 
-        if (hist_struct.history.empty()) continue;
+        if (hist_struct.history.empty() || !hist_struct.kf_state) continue;
 
         MovementData current_latest_data = hist_struct.history.back();
         double current_latest_cam_time = current_latest_data.timestamp.dbl();
 
-        // Prevent generating snapshots for stale targets (disconnected nodes)
         if (t_sim - current_latest_cam_time > 1.5) continue;
-
-        // --- LINEAR REGRESSION (OLS) CALCULATION ---
-        // Utilizing a 1.2-second sliding window history to compute the slope and intercept
-        std::vector<MovementData> window_data;
-        for (auto it = hist_struct.history.rbegin(); it != hist_struct.history.rend(); ++it) {
-            if (current_latest_cam_time - it->timestamp.dbl() <= 1.2) {
-                window_data.insert(window_data.begin(), *it);
-            } else {
-                break;
-            }
-        }
-
-        if (window_data.size() < 2) continue; // Requires at least 2 points to draw a line
-
-        int n = window_data.size();
-        double sum_x = 0.0, sum_y_lat = 0.0, sum_y_lon = 0.0;
-        double sum_xy_lat = 0.0, sum_xy_lon = 0.0, sum_x2 = 0.0;
-
-        for (const auto& d : window_data) {
-            // Using relative time (delta T from the latest CAM) to stabilize intercept values
-            double x = d.timestamp.dbl() - current_latest_cam_time; 
-            double y_lat = d.latitude;
-            double y_lon = d.longitude;
-
-            sum_x += x;
-            sum_y_lat += y_lat;
-            sum_y_lon += y_lon;
-            sum_xy_lat += (x * y_lat);
-            sum_xy_lon += (x * y_lon);
-            sum_x2 += (x * x);
-        }
-
-        double denominator = (n * sum_x2) - (sum_x * sum_x);
-        if (std::abs(denominator) < 1e-9) continue; // Prevent division by zero
 
         PendingPrediction snap;
         snap.processing_time = t_sim;
         snap.latest_cam_time = current_latest_cam_time;
-        snap.base_cam_lat = current_latest_data.latitude;
-        snap.base_cam_lon = current_latest_data.longitude;
+        snap.base_cam_lat = current_latest_data.latitude;   
+        snap.base_cam_lon = current_latest_data.longitude;  
+        snap.kf_state_snapshot = hist_struct.kf_state->getState();
 
-        // OLS Coefficients Formula
-        snap.slope_lat = ((n * sum_xy_lat) - (sum_x * sum_y_lat)) / denominator;
-        snap.intercept_lat = (sum_y_lat - (snap.slope_lat * sum_x)) / n;
-
-        snap.slope_lon = ((n * sum_xy_lon) - (sum_x * sum_y_lon)) / denominator;
-        snap.intercept_lon = (sum_y_lon - (snap.slope_lon * sum_x)) / n;
-
-        // Push to waitlist. It will be evaluated asynchronously upon future CAM arrivals
+        // Push to waitlist. It will be evaluated in the next CAM arrivals
         hist_struct.pending_queue.push_back(snap);
     }
 }
 
-void TrajektoriAppVer2::finish() {
-    // Helper lambda to append MAE summary at the bottom of the log file
+void TrajektoriAppKFv4::finish() {
     auto printMaeSummary = [](std::ofstream& stream, double sumAe, long countAe) {
         if (stream.is_open() && countAe > 0) {
             double mae_microdegree = sumAe / countAe;
-            // Constant 0.11132 roughly converts microdegrees to Cartesian meters near the equator
+            // 0.11132 roughly converts microdegrees to meters
             double mae_meter = mae_microdegree * 0.11132;
             stream << "\n;;;;;;;;;;;;;;;;MAE (microdegree);" << std::fixed << std::setprecision(12) << mae_microdegree << "\n";
             stream << ";;;;;;;;;;;;;;;;MAE (meter);" << mae_meter << "\n";
@@ -369,6 +340,42 @@ void TrajektoriAppVer2::finish() {
     printMaeSummary(mPredLog3s, mSumAe3s, mCountAe3s);
 
     ItsG5BaseService::finish();
+}
+
+void TrajektoriAppKFv4::latLonToCartesian(double lat_micro, double lon_micro, double ref_lat_micro, double ref_lon_micro, double& x, double& y) {
+    const double R = 6371000.0; // Earth radius in meters
+    
+    double lat = lat_micro / 1000000.0;
+    double lon = lon_micro / 1000000.0;
+    double ref_lat = ref_lat_micro / 1000000.0;
+    double ref_lon = ref_lon_micro / 1000000.0;
+
+    double lat_rad = lat * M_PI / 180.0;
+    double lon_rad = lon * M_PI / 180.0;
+    double ref_lat_rad = ref_lat * M_PI / 180.0;
+    double ref_lon_rad = ref_lon * M_PI / 180.0;
+
+    x = R * (lon_rad - ref_lon_rad) * cos(ref_lat_rad);
+    y = R * (lat_rad - ref_lat_rad);
+}
+
+void TrajektoriAppKFv4::cartesianToLatLon(double x, double y, double ref_lat_micro, double ref_lon_micro, double& lat_micro, double& lon_micro) {
+    const double R = 6371000.0;
+    
+    double ref_lat = ref_lat_micro / 1000000.0;
+    double ref_lon = ref_lon_micro / 1000000.0;
+
+    double ref_lat_rad = ref_lat * M_PI / 180.0;
+    double ref_lon_rad = ref_lon * M_PI / 180.0;
+
+    double lat_rad = (y / R) + ref_lat_rad;
+    double lon_rad = (x / (R * cos(ref_lat_rad))) + ref_lon_rad;
+
+    double lat = lat_rad * 180.0 / M_PI;
+    double lon = lon_rad * 180.0 / M_PI;
+    
+    lat_micro = lat * 1000000.0;
+    lon_micro = lon * 1000000.0;
 }
 
 } // namespace artery

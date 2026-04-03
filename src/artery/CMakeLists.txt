@@ -4,14 +4,25 @@ add_library(core SHARED
     application/CaObject.cc
     application/CaService.cc
     application/CamLogger.cc
-    application/TrajektoriApp.cc
-    application/TrajektoriAppKFv1.cc
-    application/TrajektoriAppVer2.cc
-    application/TrajektoriAppVerIND.cc
-    application/TrajektoriAppKF4D.cc
-    application/KalmanFilter2D.h
+    
+    # app for RL implementation
+    # application/TrajektoriApp.cc 
+    # application/TrajektoriAppVer2.cc
+
+    # app for KF 4D implementation
+    # application/TrajektoriAppKFv1.cc
+    # application/TrajektoriAppKFv2.cc
+    # application/TrajektoriAppKFv3.cc
+    # application/TrajektoriAppKFv4.cc
+    application/TrajektoriAppKFv5.cc
+    application/TrajektoriAppKF6D.cc
+
+    # application/TrajektoriAppVerIND.cc
+    # application/TrajektoriAppKF4D.cc
+
+    # application/KalmanFilter2D.h
     application/KalmanFilter4D.h
-    application/KalmanFilterIND.h
+    application/KalmanFilter6D.h
     application/DenmObject.cc
     application/DenService.cc
     application/ExampleService.cc
