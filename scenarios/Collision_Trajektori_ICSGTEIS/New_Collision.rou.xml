@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-03-31 10:53:29 by Eclipse SUMO netedit Version 1.15.0
+-->
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Routes -->
+    <route id="r_0" edges="-E8 E4 E42 E43 E44 E45 -E4 E8"/>
+    <!-- Vehicles, persons and containers (sorted by depart) -->
+    <vType id="DEFAULT_PEDTYPE" minGap="0.00" vClass="pedestrian" impatience="1.00" jmCrossingGap="0.00" jmIgnoreFoeProb="1.00" sigma="1.00" tau="0.50" maxSpeed="4.0"/>
+    <vType id="DEFAULT_VEHTYPE" minGap="0.00" actionStepLength="1.00" impatience="1.00" jmCrossingGap="0" jmIgnoreFoeProb="1.0" sigma="1.0" tau="0.5" accel="2.6" decel="4.5" maxSpeed="15.43"/>
+    
+    <!-- ============================================================================== -->
+    <!-- MODIFIKASI DINAMIKA KENDARAAN (UJI KALMAN FILTER)                              -->
+    <!-- ============================================================================== -->
+    <vehicle id="v_0" depart="0.00" route="r_0" departSpeed="max">
+        <!-- FASE 1: Kendaraan melaju maksimal dari awal, lalu mengerem untuk berhenti 
+             selama 0.5 detik di ujung jalan -E8 (tepat sebelum persimpangan J5) -->
+        <stop lane="-E8_1" endPos="85.0" duration="0.5"/>
+        <!-- FASE 2: Setelah berhenti, kendaraan akan berakselerasi kembali ke kecepatan 
+             maksimum di jalan E4, lalu kita paksa mengerem lagi untuk berhenti sangat 
+             singkat (0.1 detik) di tengah jalan E4 untuk menciptakan dinamika fluktuatif -->
+        <stop lane="E4_1" endPos="100.0" duration="0.1"/>
+    </vehicle>
+
+    <!-- Target Pejalan Kaki (Menyeberang, Berhenti sejenak, lalu Lari kembali) -->
+    <person id="p_0" depart="0.00">
+        <!-- FASE 1: Pejalan kaki berlari cepat (4.0 m/s) menyeberang jalan dari E8 dan tiba di awal jalan E3 (posisi 10.00 meter) -->
+        <walk from="E8" to="E3" arrivalPos="10.00" speed="4.0"/>
+        
+        <!-- FASE 2: Tiba-tiba diam / berhenti dengan kecepatan 0 selama 0.5 detik tepat setelah berhasil menyeberang -->
+        <stop edge="E3" endPos="10.00" duration="3.0"/>
+        
+        <walk from="E3" to="E3" arrivalPos="30.00" speed="4.0"/>
+        <stop edge="E3" endPos="30.00" duration="3.0"/>
+        
+        <!-- FASE 3: Kembali melesat berlari (4.0 m/s) menyusuri jalan E3 hingga ke titik akhir -->
+        <walk from="E3" to="E3" arrivalPos="143.00" speed="4.0"/>
+    </person>
+</routes>
