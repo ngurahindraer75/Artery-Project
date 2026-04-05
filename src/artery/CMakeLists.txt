@@ -5,14 +5,14 @@ add_library(core SHARED
     application/CaService.cc
     application/CamLogger.cc
     
-    ### app for RL implementation (uncomment accordingly) ###
-    # application/TrajAppRL.cc
+    ### app for RL implementation ###
+    application/TrajAppRL.cc
 
-    ### app for KF implementation (uncomment accordingly) ###
+    ### app for KF implementation ###
     application/TrajAppKF6D.cc
     application/KalmanFilter6D.h
-    # application/TrajAppKF4D.cc
-    # application/KalmanFilter4D.h
+    application/TrajAppKF4D.cc
+    application/KalmanFilter4D.h
 
     application/DenmObject.cc
     application/DenService.cc

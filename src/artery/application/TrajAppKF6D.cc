@@ -28,7 +28,7 @@ TrajAppKF6D::~TrajAppKF6D() {
 std::string TrajAppKF6D::getNodeType() {
     std::string type = getParentModule()->getNedTypeName();
     if (type.find("Vehicle") != std::string::npos) return "Vehicle";
-    if (type.find("Person") != std::string::npos) return "Person";
+    if (type.find("Pedestrian") != std::string::npos) return "Pedestrian";
     return "Unknown";
 }
 
@@ -112,7 +112,7 @@ void TrajAppKF6D::receiveSignal(cComponent* source, simsignal_t signalID, cObjec
 
     double time_send_absolut = (current_time_ms - delay_ms) / 1000.0;
 
-    MovementData data;
+    MovementDataKF6D data;
     data.gen_delta_time_raw = genDeltaTime_ms;
     data.cam_received_time = current_time_ms / 1000.0;
     data.calculated_delay = delay_ms / 1000.0;
@@ -131,7 +131,7 @@ void TrajAppKF6D::receiveSignal(cComponent* source, simsignal_t signalID, cObjec
         data.acceleration_mps2 = static_cast<double>(acc_val) / 10.0;
     }
 
-    AgentHistory& history = mOtherNodes[targetId];
+    AgentHistoryKF6D& history = mOtherNodes[targetId];
 
     if (!history.is_ref_set) {
         history.ref_lat = data.latitude;
@@ -182,13 +182,13 @@ void TrajAppKF6D::receiveSignal(cComponent* source, simsignal_t signalID, cObjec
         history.history.pop_front();
     }
 
-    evaluatePendingPredictions(targetId, history);
+    evaluatePendingPredictionsKF6D(targetId, history);
 }
 
-void TrajAppKF6D::evaluatePendingPredictions(long targetId, AgentHistory& hist_struct) {
+void TrajAppKF6D::evaluatePendingPredictionsKF6D(long targetId, AgentHistoryKF6D& hist_struct) {
     if (hist_struct.history.empty()) return;
 
-    const MovementData& current_cam = hist_struct.history.back();
+    const MovementDataKF6D& current_cam = hist_struct.history.back();
     double current_time = current_cam.timestamp.dbl();
 
     auto it = hist_struct.pending_queue.begin();
@@ -201,10 +201,10 @@ void TrajAppKF6D::evaluatePendingPredictions(long targetId, AgentHistory& hist_s
             double ideal_target_time = it->latest_cam_time + horizon;
 
             if (current_time >= ideal_target_time) {
-                const MovementData* best_match = &current_cam;
+                const MovementDataKF6D* best_match = &current_cam;
 
                 if (current_time > ideal_target_time && hist_struct.history.size() > 1) {
-                    const MovementData& prev_cam = hist_struct.history[hist_struct.history.size() - 2];
+                    const MovementDataKF6D& prev_cam = hist_struct.history[hist_struct.history.size() - 2];
                     double diff_after = current_time - ideal_target_time;
                     double diff_before = ideal_target_time - prev_cam.timestamp.dbl();
                     if (diff_before <= diff_after) best_match = &prev_cam;
@@ -277,7 +277,7 @@ void TrajAppKF6D::logTrajectory() {
             auto& targetHist = pair.second;
 
             if (targetHist.hasNewData && !targetHist.history.empty()) {
-                MovementData latest = targetHist.history.back();
+                MovementDataKF6D latest = targetHist.history.back();
                 mCamLogFile << std::fixed << std::setprecision(12)
                             << latest.gen_delta_time_raw << ";" << latest.cam_received_time << ";"
                             << latest.calculated_delay << ";" << latest.timestamp.dbl() << ";"
@@ -298,11 +298,11 @@ void TrajAppKF6D::takeKfSnapshot() {
         auto& hist_struct = pair.second;
         if (hist_struct.history.empty() || !hist_struct.kf_state) continue;
 
-        MovementData current_latest_data = hist_struct.history.back();
+        MovementDataKF6D current_latest_data = hist_struct.history.back();
         double current_latest_cam_time = current_latest_data.timestamp.dbl();
         if (t_sim - current_latest_cam_time > 1.5) continue;
 
-        PendingPrediction snap;
+        PendingPredictionKF6D snap;
         snap.processing_time = t_sim;
         snap.latest_cam_time = current_latest_cam_time;
         snap.base_cam_lat = current_latest_data.latitude;

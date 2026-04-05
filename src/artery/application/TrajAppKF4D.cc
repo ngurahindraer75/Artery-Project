@@ -28,7 +28,7 @@ TrajAppKF4D::~TrajAppKF4D() {
 std::string TrajAppKF4D::getNodeType() {
     std::string type = getParentModule()->getNedTypeName();
     if (type.find("Vehicle") != std::string::npos) return "Vehicle";
-    if (type.find("Person") != std::string::npos) return "Person";
+    if (type.find("Pedestrian") != std::string::npos) return "Pedestrian";
     return "Unknown";
 }
 
@@ -39,13 +39,13 @@ void TrajAppKF4D::initialize() {
     std::string nodeType = getNodeType();
     std::string targetLabel = (nodeType == "Vehicle") ? "pedestrian_prediction" : "vehicle_prediction";
 
-    mCamLogFile.open("results/KF_CAM_data_" + targetLabel + "_v5.csv", std::ios::out | std::ios::app);
+    mCamLogFile.open("results/KF4D_CAM_data_" + targetLabel + ".csv", std::ios::out | std::ios::app);
     if (mCamLogFile.tellp() == 0) {
         mCamLogFile << "GenDeltaTime_Raw;CAM_Received_Time;Calculated_Delay;CAM_Generation_Time;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Speed_mps;Heading\n";
     }
 
     auto initPredLog = [&](std::ofstream& stream, const std::string& horizonStr) {
-        stream.open("results/KF_" + horizonStr + "s_coefficient_log_" + targetLabel + "_v5.csv", std::ios::out);
+        stream.open("results/KF4D_" + horizonStr + "s_coefficient_log_" + targetLabel + ".csv", std::ios::out);
         stream << "Processing_Time(s);Latest_CAM_Time(s);Base_CAM_Lat;Base_CAM_Lon;Target_Prediction_Time(s);Node_Target;Actual_Lat;Actual_Lon;State_X;State_Y;Vel_X;Vel_Y;Pred_Lat;Pred_Lon;Lat_AE;Lon_AE;Total_AE\n";
     };
 
@@ -110,7 +110,7 @@ void TrajAppKF4D::receiveSignal(cComponent* source, simsignal_t signalID, cObjec
 
     double time_send_absolut = (current_time_ms - delay_ms) / 1000.0;
 
-    MovementData data;
+    MovementDataKF4D data;
     data.gen_delta_time_raw = genDeltaTime_ms;
     data.cam_received_time = current_time_ms / 1000.0;
     data.calculated_delay = delay_ms / 1000.0;
@@ -122,7 +122,7 @@ void TrajAppKF4D::receiveSignal(cComponent* source, simsignal_t signalID, cObjec
     data.speed_mps = static_cast<double>(bvc.speed.speedValue) / 100.0;
     data.heading_degree = static_cast<double>(bvc.heading.headingValue) / 10.0;
 
-    AgentHistory& history = mOtherNodes[targetId];
+    AgentHistoryKF4D& history = mOtherNodes[targetId];
 
     if (!history.is_ref_set) {
         history.ref_lat = data.latitude;
@@ -167,13 +167,13 @@ void TrajAppKF4D::receiveSignal(cComponent* source, simsignal_t signalID, cObjec
         history.history.pop_front();
     }
 
-    evaluatePendingPredictions(targetId, history);
+    evaluatePendingPredictionsKF4D(targetId, history);
 }
 
-void TrajAppKF4D::evaluatePendingPredictions(long targetId, AgentHistory& hist_struct) {
+void TrajAppKF4D::evaluatePendingPredictionsKF4D(long targetId, AgentHistoryKF4D& hist_struct) {
     if (hist_struct.history.empty()) return;
 
-    const MovementData& current_cam = hist_struct.history.back();
+    const MovementDataKF4D& current_cam = hist_struct.history.back();
     double current_time = current_cam.timestamp.dbl();
 
     auto it = hist_struct.pending_queue.begin();
@@ -186,10 +186,10 @@ void TrajAppKF4D::evaluatePendingPredictions(long targetId, AgentHistory& hist_s
             double ideal_target_time = it->latest_cam_time + horizon;
 
             if (current_time >= ideal_target_time) {
-                const MovementData* best_match = &current_cam;
+                const MovementDataKF4D* best_match = &current_cam;
 
                 if (current_time > ideal_target_time && hist_struct.history.size() > 1) {
-                    const MovementData& prev_cam = hist_struct.history[hist_struct.history.size() - 2];
+                    const MovementDataKF4D& prev_cam = hist_struct.history[hist_struct.history.size() - 2];
                     double diff_after = current_time - ideal_target_time;
                     double diff_before = ideal_target_time - prev_cam.timestamp.dbl();
                     if (diff_before <= diff_after) {
@@ -261,7 +261,7 @@ void TrajAppKF4D::logTrajectory() {
             auto& targetHist = pair.second;
 
             if (targetHist.hasNewData && !targetHist.history.empty()) {
-                MovementData latest = targetHist.history.back();
+                MovementDataKF4D latest = targetHist.history.back();
                 mCamLogFile << std::fixed << std::setprecision(12)
                             << latest.gen_delta_time_raw << ";"
                             << latest.cam_received_time << ";"
@@ -287,12 +287,12 @@ void TrajAppKF4D::takeKfSnapshot() {
 
         if (hist_struct.history.empty() || !hist_struct.kf_state) continue;
 
-        MovementData current_latest_data = hist_struct.history.back();
+        MovementDataKF4D current_latest_data = hist_struct.history.back();
         double current_latest_cam_time = current_latest_data.timestamp.dbl();
 
         if (t_sim - current_latest_cam_time > 1.5) continue;
 
-        PendingPrediction snap;
+        PendingPredictionKF4D snap;
         snap.processing_time = t_sim;
         snap.latest_cam_time = current_latest_cam_time;
         snap.base_cam_lat = current_latest_data.latitude;

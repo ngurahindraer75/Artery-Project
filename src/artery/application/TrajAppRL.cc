@@ -42,7 +42,7 @@ TrajAppRL::~TrajAppRL() {
 std::string TrajAppRL::getNodeType() {
     std::string type = getParentModule()->getNedTypeName();
     if (type.find("Vehicle") != std::string::npos) return "Vehicle";
-    if (type.find("Person") != std::string::npos) return "Person";
+    if (type.find("Pedestrian") != std::string::npos) return "Pedestrian";
     return "Unknown";
 }
 
@@ -54,14 +54,14 @@ void TrajAppRL::initialize() {
     std::string targetLabel = (nodeType == "Vehicle") ? "pedestrian_prediction" : "vehicle_prediction";
 
     // 1. Initialize Raw CAM Data Log
-    mCamLogFile.open("results/RL_CAM_data_" + targetLabel + "_v2.csv", std::ios::out | std::ios::app);
+    mCamLogFile.open("results/RL_CAM_data_" + targetLabel + ".csv", std::ios::out | std::ios::app);
     if (mCamLogFile.tellp() == 0) {
         mCamLogFile << "GenDeltaTime_Raw;CAM_Received_Time;Calculated_Delay;CAM_Generation_Time;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Target_Speed_Raw;Target_Heading_Raw\n";
     }
 
     // 2. Initialize Prediction Logs for all 3 Horizons
     auto initPredLog = [&](std::ofstream& stream, const std::string& horizonStr) {
-        stream.open("results/RL_" + horizonStr + "s_coefficient_log_" + targetLabel + "_v2.csv", std::ios::out);
+        stream.open("results/RL_" + horizonStr + "s_coefficient_log_" + targetLabel + ".csv", std::ios::out);
         stream << "Processing_Time(s);Latest_CAM_Time(s);Base_CAM_Lat;Base_CAM_Lon;Target_Prediction_Time(s);Node_Target;Actual_Lat;Actual_Lon;Slope_Lat;Intercept_Lat;Pred_Lat;Slope_Lon;Intercept_Lon;Pred_Lon;Lat_AE;Lon_AE;AE\n";
     };
 
@@ -146,7 +146,7 @@ void TrajAppRL::receiveSignal(cComponent* source, simsignal_t signalID, cObject*
     double time_send_absolut = (current_time_ms - delay_ms) / 1000.0;
     // --------------------------------------------------------
 
-    MovementData data;
+    MovementDataRL data;
     data.gen_delta_time_raw = genDeltaTime_ms;
     data.cam_received_time = current_time_ms / 1000.0;
     data.calculated_delay = delay_ms / 1000.0;
@@ -158,7 +158,7 @@ void TrajAppRL::receiveSignal(cComponent* source, simsignal_t signalID, cObject*
     data.speed_mps = static_cast<double>(bvc.speed.speedValue);
     data.heading_degree = static_cast<double>(bvc.heading.headingValue) / 10.0;
 
-    AgentHistory& history = mOtherNodes[targetId];
+    AgentHistoryRL& history = mOtherNodes[targetId];
 
     history.history.push_back(data);
     history.lastReceptionTime = time_receive;
@@ -171,13 +171,13 @@ void TrajAppRL::receiveSignal(cComponent* source, simsignal_t signalID, cObject*
     }
 
     // ON-THE-FLY EVALUATION TRIGGER
-    evaluatePendingPredictions(targetId, history);
+    evaluatePendingPredictionsRL(targetId, history);
 }
 
-void TrajAppRL::evaluatePendingPredictions(long targetId, AgentHistory& hist_struct) {
+void TrajAppRL::evaluatePendingPredictionsRL(long targetId, AgentHistoryRL& hist_struct) {
     if (hist_struct.history.empty()) return;
     
-    const MovementData& current_cam = hist_struct.history.back();
+    const MovementDataRL& current_cam = hist_struct.history.back();
     double current_time = current_cam.timestamp.dbl();
     
     auto it = hist_struct.pending_queue.begin();
@@ -192,11 +192,11 @@ void TrajAppRL::evaluatePendingPredictions(long targetId, AgentHistory& hist_str
             
             // Priority 1 & Priority 2 Time Alignment: Executed precisely upon CAM arrival
             if (current_time >= ideal_target_time) {
-                const MovementData* best_match = &current_cam;
+                const MovementDataRL* best_match = &current_cam;
                 
                 // Select the nearest neighbor CAM to the ideal target time
                 if (current_time > ideal_target_time && hist_struct.history.size() > 1) {
-                    const MovementData& prev_cam = hist_struct.history[hist_struct.history.size() - 2];
+                    const MovementDataRL& prev_cam = hist_struct.history[hist_struct.history.size() - 2];
                     double diff_after = current_time - ideal_target_time;
                     double diff_before = ideal_target_time - prev_cam.timestamp.dbl();
                     if (diff_before <= diff_after) {
@@ -270,7 +270,7 @@ void TrajAppRL::logTrajectory() {
             auto& targetHist = pair.second;
             
             if (targetHist.hasNewData && !targetHist.history.empty()) {
-                MovementData latest = targetHist.history.back();
+                MovementDataRL latest = targetHist.history.back();
                 mCamLogFile << std::fixed << std::setprecision(12)
                          << latest.gen_delta_time_raw << ";"
                          << latest.cam_received_time << ";"
@@ -294,7 +294,7 @@ void TrajAppRL::takeRlSnapshot() {
 
         if (hist_struct.history.empty()) continue;
 
-        MovementData current_latest_data = hist_struct.history.back();
+        MovementDataRL current_latest_data = hist_struct.history.back();
         double current_latest_cam_time = current_latest_data.timestamp.dbl();
 
         // Prevent generating snapshots for stale targets (disconnected nodes)
@@ -302,7 +302,7 @@ void TrajAppRL::takeRlSnapshot() {
 
         // --- LINEAR REGRESSION (OLS) CALCULATION ---
         // Utilizing a 1.2-second sliding window history to compute the slope and intercept
-        std::vector<MovementData> window_data;
+        std::vector<MovementDataRL> window_data;
         for (auto it = hist_struct.history.rbegin(); it != hist_struct.history.rend(); ++it) {
             if (current_latest_cam_time - it->timestamp.dbl() <= 1.2) {
                 window_data.insert(window_data.begin(), *it);
@@ -334,7 +334,7 @@ void TrajAppRL::takeRlSnapshot() {
         double denominator = (n * sum_x2) - (sum_x * sum_x);
         if (std::abs(denominator) < 1e-9) continue; // Prevent division by zero
 
-        PendingPrediction snap;
+        PendingPredictionRL snap;
         snap.processing_time = t_sim;
         snap.latest_cam_time = current_latest_cam_time;
         snap.base_cam_lat = current_latest_data.latitude;

@@ -18,10 +18,10 @@
 namespace artery {
 
 /**
- * @struct MovementData
+ * @struct MovementDataRL
  * @brief Stores extracted and synchronized properties of a single received CAM.
  */
-struct MovementData {
+struct MovementDataRL {
     long gen_delta_time_raw;        ///< Raw GenerationDeltaTime from ASN.1 payload
     double cam_received_time;       ///< Exact simulation time when the packet was received
     double calculated_delay;        ///< Network transmission delay (Age of Information)
@@ -33,10 +33,10 @@ struct MovementData {
 };
 
 /**
- * @struct PendingPrediction
+ * @struct PendingPredictionRL
  * @brief Holds the calculated Linear Regression coefficients waiting for future CAMs to evaluate Mean Absolute Error (MAE).
  */
-struct PendingPrediction {
+struct PendingPredictionRL {
     double processing_time;         ///< The exact time the snapshot/prediction was taken
     double latest_cam_time;         ///< The timestamp of the most recent CAM used for prediction
     double base_cam_lat;            ///< Latitude at the time of prediction
@@ -55,12 +55,12 @@ struct PendingPrediction {
 };
 
 /**
- * @struct AgentHistory
+ * @struct AgentHistoryRL
  * @brief Maintains the sliding window history and prediction queues for a specific target node.
  */
-struct AgentHistory {
-    std::deque<MovementData> history;           ///< Sliding window of recent CAMs (used for OLS fitting)
-    std::deque<PendingPrediction> pending_queue;///< Queue of snapshots awaiting future CAMs for evaluation
+struct AgentHistoryRL {
+    std::deque<MovementDataRL> history;           ///< Sliding window of recent CAMs (used for OLS fitting)
+    std::deque<PendingPredictionRL> pending_queue;///< Queue of snapshots awaiting future CAMs for evaluation
     
     omnetpp::simtime_t lastReceptionTime;       ///< Tracks the last time a message was received from this target
     bool hasNewData = false;                    ///< Flag to trigger trajectory logging
@@ -96,7 +96,7 @@ private:
      * @param targetId The ID of the node being tracked.
      * @param hist_struct The history and pending queue structure for the target.
      */
-    void evaluatePendingPredictions(long targetId, AgentHistory& hist_struct);
+    void evaluatePendingPredictionsRL(long targetId, AgentHistoryRL& hist_struct);
 
     /**
      * @brief Determines whether the hosting node is a Vehicle or a Person.
@@ -120,7 +120,7 @@ private:
     long mCountAe1s = 0, mCountAe2s = 0, mCountAe3s = 0;
     
     // Hash map to track multiple targets simultaneously
-    std::map<long, AgentHistory> mOtherNodes;
+    std::map<long, AgentHistoryRL> mOtherNodes;
 };
 
 } // namespace artery

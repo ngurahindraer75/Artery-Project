@@ -14,7 +14,7 @@
 
 namespace artery {
 
-struct MovementData {
+struct MovementDataKF6D {
     long gen_delta_time_raw;
     double cam_received_time;
     double calculated_delay;
@@ -34,7 +34,7 @@ struct MovementData {
     double acc_y;
 };
 
-struct PendingPrediction {
+struct PendingPredictionKF6D {
     double processing_time;
     double latest_cam_time;
     double base_cam_lat;
@@ -46,9 +46,9 @@ struct PendingPrediction {
     bool eval_3s_done = false;
 };
 
-struct AgentHistory {
-    std::deque<MovementData> history;
-    std::deque<PendingPrediction> pending_queue;
+struct AgentHistoryKF6D {
+    std::deque<MovementDataKF6D> history;
+    std::deque<PendingPredictionKF6D> pending_queue;
 
     omnetpp::simtime_t lastReceptionTime;
     bool hasNewData = false;
@@ -73,7 +73,7 @@ protected:
 private:
     void logTrajectory();
     void takeKfSnapshot();
-    void evaluatePendingPredictions(long targetId, AgentHistory& hist_struct);
+    void evaluatePendingPredictionsKF6D(long targetId, AgentHistoryKF6D& hist_struct);
     std::string getNodeType();
 
     void latLonToCartesian(double lat_micro, double lon_micro, double ref_lat_micro, double ref_lon_micro, double& x, double& y);
@@ -92,7 +92,7 @@ private:
     double mSumAe1s = 0.0, mSumAe2s = 0.0, mSumAe3s = 0.0;
     long mCountAe1s = 0, mCountAe2s = 0, mCountAe3s = 0;
 
-    std::map<long, AgentHistory> mOtherNodes;
+    std::map<long, AgentHistoryKF6D> mOtherNodes;
 };
 
 } // namespace artery
