@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 
+  =============================================================================
+  Extensive Multi-Node Collision Scenario for V2X Trajectory Prediction 
+  Generated for Artery, OMNeT++, and SUMO Simulation Framework.
+
+  Note: 
+  This file is strictly chronologically sorted by 'depart' time to comply 
+  with SUMO's sequential XML parser. It also uses a precise actionStepLength 
+  to maintain realistic car-following physics for the Kalman Filter arrays.
+  =============================================================================
+-->
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    
+    <!-- ================================================================== -->
+    <!-- 1. ROUTE DEFINITIONS (4 COMPASS DIRECTIONS CROSSING J5)            -->
+    <!-- ================================================================== -->
+    <route id="r_0" edges="-E8 E4 E42 E43 E44 E45 -E4 E8"/> <!-- East to West -->
+    <route id="r_1" edges="-E4 E8"/>                        <!-- West to East -->
+    <route id="r_2" edges="-E3 E5"/>                        <!-- North to South -->
+    <route id="r_3" edges="-E5 E3"/>                        <!-- South to North -->
+
+    <!-- ================================================================== -->
+    <!-- 2. VTYPE DEFINITIONS WITH PSEUDORANDOM DISTRIBUTIONS               -->
+    <!-- ================================================================== -->
+    
+    <!-- Pedestrian Type: Uses a Gaussian distribution for speed to simulate stochastic behavior -->
+    <!-- WARNING: Do not add spaces inside normc() to prevent XML schema union errors -->
+    <vType id="DEFAULT_PEDTYPE" minGap="0.00" vClass="pedestrian" impatience="1.00" jmCrossingGap="0.00" jmIgnoreFoeProb="1.00" sigma="1.00" tau="0.50" maxSpeed="4.0" speedFactor="normc(1.0,0.2,0.5,1.5)"/>
+           
+    <!-- Vehicle Type: actionStepLength is set to 0.1 to match global step-length and prevent ballistic physics warnings -->
+    <vType id="DEFAULT_VEHTYPE" minGap="0.00" actionStepLength="0.1" impatience="1.00" jmCrossingGap="0" jmIgnoreFoeProb="1.0" sigma="1.0" tau="0.5" accel="2.6" decel="4.5" maxSpeed="15.43" speedFactor="normc(1.0,0.1,0.8,1.2)"/>
+    
+    <!-- ================================================================== -->
+    <!-- 3. ENTITY DEFINITIONS (STRICTLY SORTED BY DEPART TIME)             -->
+    <!-- ================================================================== -->
+    
+    <!-- === TIMESTEP: 0.00s === -->
+    <vehicle id="v_0" depart="0.00" route="r_0" departSpeed="max">
+        <!-- Force a hard brake before J5 intersection to test KF adaptation -->
+        <stop lane="-E8_1" endPos="85.0" duration="0.5"/>
+        <stop lane="E4_1" endPos="100.0" duration="0.1"/>
+    </vehicle>
+    
+    <person id="p_0" depart="0.00">
+        <!-- Turns NORTH towards edge E3 -->
+        <walk from="E8" to="E3" arrivalPos="10.00"/>
+        <stop edge="E3" endPos="10.00" duration="3.0"/>
+        <walk from="E3" to="E3" arrivalPos="30.00"/>
+        <stop edge="E3" endPos="30.00" duration="3.0"/>
+        <walk from="E3" to="E3" arrivalPos="143.00"/>
+    </person>
+
+    <!-- === TIMESTEP: 1.00s === -->
+    <person id="p_1" depart="1.00">
+        <!-- Turns SOUTH towards edge E5 -->
+        <walk from="E8" to="E5" arrivalPos="10.00"/>
+        <stop edge="E5" endPos="10.00" duration="3.0"/>
+        <walk from="E5" to="E5" arrivalPos="30.00"/>
+        <stop edge="E5" endPos="30.00" duration="3.0"/>
+        <walk from="E5" to="E5" arrivalPos="143.00"/>
+    </person>
+
+    <!-- === TIMESTEP: 2.00s === -->
+    <person id="p_2" depart="2.00">
+        <!-- Walks straight WEST towards edge E4 -->
+        <walk from="E8" to="E4" arrivalPos="10.00"/>
+        <stop edge="E4" endPos="10.00" duration="3.0"/>
+        <walk from="E4" to="E4" arrivalPos="30.00"/>
+        <stop edge="E4" endPos="30.00" duration="3.0"/>
+        <walk from="E4" to="E4" arrivalPos="143.00"/>
+    </person>
+
+    <!-- === TIMESTEP: 3.00s === -->
+    <vehicle id="v_1" depart="3.00" route="r_1" departSpeed="max">
+        <!-- Force a hard brake before J5 intersection from the opposite direction -->
+        <stop lane="-E4_1" endPos="150.0" duration="0.5"/>
+    </vehicle>
+    
+    <person id="p_3" depart="3.00">
+        <!-- Walks EAST towards edge E8 -->
+        <walk from="E8" to="E8" arrivalPos="10.00"/>
+        <stop edge="E8" endPos="10.00" duration="3.0"/>
+        <walk from="E8" to="E8" arrivalPos="30.00"/>
+        <stop edge="E8" endPos="30.00" duration="3.0"/>
+        <!-- Note: Final arrival position constrained to 80.00m to prevent out-of-bounds error on short E8 edge -->
+        <walk from="E8" to="E8" arrivalPos="80.00"/>
+    </person>
+
+    <!-- === TIMESTEP: 6.00s === -->
+    <vehicle id="v_2" depart="6.00" route="r_2" departSpeed="max">
+        <stop lane="-E3_1" endPos="175.0" duration="0.5"/>
+    </vehicle>
+
+    <!-- === TIMESTEP: 9.00s === -->
+    <vehicle id="v_3" depart="9.00" route="r_3" departSpeed="max">
+        <stop lane="-E5_1" endPos="175.0" duration="0.5"/>
+    </vehicle>
+    
+</routes>

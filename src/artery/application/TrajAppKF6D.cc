@@ -1,361 +1,313 @@
-#include "artery/application/TrajAppKF6D.h"
-#include "artery/application/CaService.h"
-#include "artery/application/CaObject.h"
-#include "artery/application/Middleware.h"
-#include <omnetpp/cpacket.h>
+/**
+ * @file TrajAppKF6D.cc
+ * @brief Trajectory Prediction Application using Kalman Filter 6D.
+ * @details Extracts precise ETSI ITS-G5 high-frequency kinematics (including acceleration). 
+ *          Uses Cartesian Equirectangular projection and quadratic Newtonian physics 
+ *          equations (m, m/s, m/s^2) for extrapolation. Maintains a 4-second memory 
+ *          queue for Nearest-Neighbor time alignment against cyclic evaluation horizons.
+ */
 
-namespace artery {
+#include "artery/application/TrajAppKF6D.h"
+#include "artery/application/VehicleDataProvider.h"
+#include "artery/application/CaService.h"
+#include <vanetza/asn1/its/CAM.h>
+#include <vanetza/asn1/cam.hpp>
+#include <iostream>
+
 using namespace omnetpp;
 
+namespace artery {
+
+// REQUIRED FOR OMNET++ TO RECOGNIZE THE C++ MODULE
 Define_Module(TrajAppKF6D);
 
-TrajAppKF6D::~TrajAppKF6D() {
-    if (mCamLogFile.is_open()) mCamLogFile.close();
-    if (mPredLog1s.is_open()) mPredLog1s.close();
-    if (mPredLog2s.is_open()) mPredLog2s.close();
-    if (mPredLog3s.is_open()) mPredLog3s.close();
-
-    if (mLogTimer) {
-        cancelAndDelete(mLogTimer);
-        mLogTimer = nullptr;
-    }
-    if (mPredictionTimer) {
-        cancelAndDelete(mPredictionTimer);
-        mPredictionTimer = nullptr;
-    }
-}
+TrajAppKF6D::~TrajAppKF6D() {}
 
 std::string TrajAppKF6D::getNodeType() {
-    std::string type = getParentModule()->getNedTypeName();
-    if (type.find("Vehicle") != std::string::npos) return "Vehicle";
-    if (type.find("Pedestrian") != std::string::npos) return "Pedestrian";
-    return "Unknown";
+    cModule* myNode = getParentModule()->getParentModule();
+    if (myNode) {
+        std::string type = myNode->getNedTypeName();
+        if (type.find("Person") != std::string::npos || type.find("Pedestrian") != std::string::npos) {
+            return "Pedestrian";
+        }
+    }
+    return "Vehicle"; 
+}
+
+// -----------------------------------------------------------------------------------------
+// SPATIAL CONVERTERS (0.1 Microdegree ETSI format <-> Local Cartesian Meters)
+// -----------------------------------------------------------------------------------------
+void TrajAppKF6D::latLonToCartesian(double lat_raw, double lon_raw, double ref_lat_raw, double ref_lon_raw, double& x, double& y) {
+    const double R = 6371000.0; // Earth's radius in meters
+    double lat_deg = lat_raw * 1e-7;
+    double lon_deg = lon_raw * 1e-7;
+    double ref_lat_deg = ref_lat_raw * 1e-7;
+    double ref_lon_deg = ref_lon_raw * 1e-7;
+    
+    x = R * (lon_deg - ref_lon_deg) * (M_PI / 180.0) * std::cos(ref_lat_deg * M_PI / 180.0);
+    y = R * (lat_deg - ref_lat_deg) * (M_PI / 180.0);
+}
+
+void TrajAppKF6D::cartesianToLatLon(double x, double y, double ref_lat_raw, double ref_lon_raw, double& lat_raw, double& lon_raw) {
+    const double R = 6371000.0;
+    double ref_lat_deg = ref_lat_raw * 1e-7;
+    double ref_lon_deg = ref_lon_raw * 1e-7;
+    
+    double lat_deg = ref_lat_deg + (y / R) * (180.0 / M_PI);
+    double lon_deg = ref_lon_deg + (x / (R * std::cos(ref_lat_deg * M_PI / 180.0))) * (180.0 / M_PI);
+    
+    lat_raw = lat_deg * 1e7;
+    lon_raw = lon_deg * 1e7;
 }
 
 void TrajAppKF6D::initialize() {
     ItsG5BaseService::initialize();
-    mLogInterval = par("logInterval");
 
     std::string nodeType = getNodeType();
     std::string targetLabel = (nodeType == "Vehicle") ? "pedestrian_prediction" : "vehicle_prediction";
 
-    // Initialize Raw CAM Data Log
-    mCamLogFile.open("results/KF6D_CAM_data_" + targetLabel + ".csv", std::ios::out | std::ios::app);
-    if (mCamLogFile.tellp() == 0) {
+    // 1. Raw CAM Data Log File Initialization (Added Acc_mps2)
+    mCamLogFile.open("results/KF6D_CAM_data_" + targetLabel + ".csv", std::ios_base::out | std::ios_base::app);
+    mCamLogFile.seekp(0, std::ios::end); 
+    if (mCamLogFile.tellp() <= 0) {
         mCamLogFile << "GenDeltaTime_Raw;CAM_Received_Time;Calculated_Delay;CAM_Generation_Time;Observer_ID;Target_ID;Target_Lat_Raw;Target_Lon_Raw;Speed_mps;Heading;Acc_mps2\n";
+        mCamLogFile.flush(); 
     }
 
-    // Initialize Prediction Logs for all 3 Horizons
+    // 2. Horizon Prediction Log Initialization (Added Acc_X, Acc_Y)
     auto initPredLog = [&](std::ofstream& stream, const std::string& horizonStr) {
-        stream.open("results/KF6D_" + horizonStr + "s_coefficient_log_" + targetLabel + ".csv", std::ios::out);
-        stream << "Processing_Time(s);Latest_CAM_Time(s);Base_CAM_Lat;Base_CAM_Lon;Target_Prediction_Time(s);Node_Target;Actual_Lat;Actual_Lon;State_X;State_Y;Vel_X;Vel_Y;Acc_X;Acc_Y;Pred_Lat;Pred_Lon;Lat_AE;Lon_AE;Total_AE\n";
+        stream.open("results/KF6D_" + horizonStr + "_coefficient_log_" + targetLabel + ".csv", std::ios_base::out | std::ios_base::app);
+        stream.seekp(0, std::ios::end); 
+        if (stream.tellp() <= 0) {
+            stream << "Processing_Time(s);Latest_CAM_Time(s);Observer_ID;Base_CAM_Lat;Base_CAM_Lon;Target_Prediction_Time(s);Target_ID;Actual_Lat;Actual_Lon;State_X;State_Y;Vel_X;Vel_Y;Acc_X;Acc_Y;Pred_Lat;Pred_Lon;Lat_AE;Lon_AE;Total_AE\n";
+            stream.flush(); 
+        }
     };
 
-    initPredLog(mPredLog1s, "1");
-    initPredLog(mPredLog2s, "2");
-    initPredLog(mPredLog3s, "3");
-
-    mLogTimer = new cMessage("logTimer");
-    scheduleAt(simTime() + mLogInterval, mLogTimer);
+    initPredLog(mPredLog1s, "1s");
+    initPredLog(mPredLog2s, "2s");
+    initPredLog(mPredLog3s, "3s");
 
     mCamReceivedSignal = registerSignal("CamReceived");
     getParentModule()->subscribe(mCamReceivedSignal, this);
-
-    mPredictionTimer = new cMessage("predictionTimer");
-    scheduleAt(simTime() + 1.0, mPredictionTimer);
-}
-
-void TrajAppKF6D::handleMessage(cMessage* msg) {
-    if (msg == mLogTimer) {
-        logTrajectory();
-        scheduleAt(simTime() + mLogInterval, mLogTimer);
-        return;
-    }
-    if (msg == mPredictionTimer) {
-        takeKfSnapshot();
-        scheduleAt(simTime() + 1.0, mPredictionTimer);
-        return;
-    }
-    delete msg;
-}
-
-void TrajAppKF6D::receiveSignal(cComponent* source, simsignal_t signalID, cObject* obj, cObject* details) {
-    if (signalID != mCamReceivedSignal) return;
-
-    auto ca_obj = dynamic_cast<const CaObject*>(obj);
-    if (!ca_obj) return; 
-
-    const auto& cam = *ca_obj->asn1();
-    long targetId = cam.header.stationID;
-
-    const auto& basic = cam.cam.camParameters.basicContainer;
-    const auto& hfc = cam.cam.camParameters.highFrequencyContainer;
-
-    if (hfc.present != HighFrequencyContainer_PR_basicVehicleContainerHighFrequency) return;
-    const auto& bvc = hfc.choice.basicVehicleContainerHighFrequency;
-
-    long genDeltaTime_ms = cam.cam.generationDeltaTime;
-    simtime_t time_receive = simTime();
-    long long current_time_ms = time_receive.inUnit(SIMTIME_MS);
-
-    static long long tai_offset_mod = -1;
-    if (tai_offset_mod == -1) {
-        const cPacket* packet = dynamic_cast<const cPacket*>(details);
-        long long true_creation_ms = (packet ? packet->getCreationTime() : simTime()).inUnit(SIMTIME_MS);
-        tai_offset_mod = (genDeltaTime_ms - true_creation_ms) % 65536;
-        if (tai_offset_mod < 0) tai_offset_mod += 65536;
-    }
-
-    long current_mod = (current_time_ms + tai_offset_mod) % 65536;
-    long delay_ms = current_mod - genDeltaTime_ms;
-    if (delay_ms < 0) delay_ms += 65536;
-
-    double time_send_absolut = (current_time_ms - delay_ms) / 1000.0;
-
-    MovementDataKF6D data;
-    data.gen_delta_time_raw = genDeltaTime_ms;
-    data.cam_received_time = current_time_ms / 1000.0;
-    data.calculated_delay = delay_ms / 1000.0;
-    data.timestamp = time_send_absolut;
-
-    // Position and Speed
-    data.latitude = static_cast<double>(basic.referencePosition.latitude) / 10.0;
-    data.longitude = static_cast<double>(basic.referencePosition.longitude) / 10.0;
-    data.speed_mps = static_cast<double>(bvc.speed.speedValue) / 100.0;
-    data.heading_degree = static_cast<double>(bvc.heading.headingValue) / 10.0;
-
-    // UPGRADE: Extract Longitudinal Acceleration from CAM
-    data.acceleration_mps2 = 0.0;
-    long acc_val = bvc.longitudinalAcceleration.longitudinalAccelerationValue;
-    if (acc_val != 161) { // 161 is unavailable in ETSI ASN.1
-        data.acceleration_mps2 = static_cast<double>(acc_val) / 10.0;
-    }
-
-    AgentHistoryKF6D& history = mOtherNodes[targetId];
-
-    if (!history.is_ref_set) {
-        history.ref_lat = data.latitude;
-        history.ref_lon = data.longitude;
-        history.is_ref_set = true;
-
-        // Dynamic KF Tuning Logic 
-        double q_tuning_factor = (getNodeType() == "Vehicle") ? 2.0 : 20.0;
-
-        history.kf_state = std::make_unique<KalmanFilter6D>(q_tuning_factor);
-        history.kf_state->init({0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
-    }
-
-    // Cartesian Math: Converts Geography to localized Meters
-    double local_x, local_y;
-    latLonToCartesian(data.latitude, data.longitude, history.ref_lat, history.ref_lon, local_x, local_y);
-    data.local_x = local_x;
-    data.local_y = local_y;
-
-    // Vector Decomposition: Convert scalar speed and acceleration to Cartesian X and Y vectors
-    double heading_rad = data.heading_degree * M_PI / 180.0;
-    data.vel_x = data.speed_mps * sin(heading_rad);
-    data.vel_y = data.speed_mps * cos(heading_rad);
-    data.acc_x = data.acceleration_mps2 * sin(heading_rad);
-    data.acc_y = data.acceleration_mps2 * cos(heading_rad);
-
-    double dt = 0.1;
-    if (!history.history.empty()) {
-        dt = data.timestamp.dbl() - history.history.back().timestamp.dbl();
-    }
-
-    // Execute 6D KF Predict Phase
-    if (dt > 0.0 && history.kf_state) {
-        history.kf_state->predict(dt);
-    }
-
-    // Execute 6D KF Update Phase (Fusing Pos, Vel, and Acc simultaneously)
-    if (history.kf_state) {
-        std::vector<double> measurement = {data.local_x, data.local_y, data.vel_x, data.vel_y, data.acc_x, data.acc_y};
-        history.kf_state->update(measurement);
-    }
-
-    history.history.push_back(data);
-    history.lastReceptionTime = time_receive;
-    history.hasNewData = true;
-
-    if (history.history.size() > 20) {
-        history.history.pop_front();
-    }
-
-    evaluatePendingPredictionsKF6D(targetId, history);
-}
-
-void TrajAppKF6D::evaluatePendingPredictionsKF6D(long targetId, AgentHistoryKF6D& hist_struct) {
-    if (hist_struct.history.empty()) return;
-
-    const MovementDataKF6D& current_cam = hist_struct.history.back();
-    double current_time = current_cam.timestamp.dbl();
-
-    auto it = hist_struct.pending_queue.begin();
-    while (it != hist_struct.pending_queue.end()) {
-        bool all_done = true;
-
-        auto evaluate_horizon = [&](double horizon, bool& is_done, std::ofstream& logFile, double& sumAE, long& countAE) {
-            if (is_done) return;
-
-            double ideal_target_time = it->latest_cam_time + horizon;
-
-            if (current_time >= ideal_target_time) {
-                const MovementDataKF6D* best_match = &current_cam;
-
-                if (current_time > ideal_target_time && hist_struct.history.size() > 1) {
-                    const MovementDataKF6D& prev_cam = hist_struct.history[hist_struct.history.size() - 2];
-                    double diff_after = current_time - ideal_target_time;
-                    double diff_before = ideal_target_time - prev_cam.timestamp.dbl();
-                    if (diff_before <= diff_after) best_match = &prev_cam;
-                }
-
-                double target_prediction_time = best_match->timestamp.dbl();
-                double dt_predict = target_prediction_time - it->latest_cam_time;
-
-                // Extract full 6D State
-                double state_x = it->kf_state_snapshot[0];
-                double state_y = it->kf_state_snapshot[1];
-                double vel_x   = it->kf_state_snapshot[2];
-                double vel_y   = it->kf_state_snapshot[3];
-                double acc_x   = it->kf_state_snapshot[4];
-                double acc_y   = it->kf_state_snapshot[5];
-
-                // UPGRADE: Parabolic Prediction Equation (Constant Acceleration Model)
-                double dt_sq = dt_predict * dt_predict;
-                double pred_local_x = state_x + (vel_x * dt_predict) + (0.5 * acc_x * dt_sq);
-                double pred_local_y = state_y + (vel_y * dt_predict) + (0.5 * acc_y * dt_sq);
-
-                double pred_lat, pred_lon;
-                cartesianToLatLon(pred_local_x, pred_local_y, hist_struct.ref_lat, hist_struct.ref_lon, pred_lat, pred_lon);
-
-                double lat_ae = std::abs(pred_lat - best_match->latitude);
-                double lon_ae = std::abs(pred_lon - best_match->longitude);
-                double ae = std::sqrt((lat_ae * lat_ae) + (lon_ae * lon_ae));
-
-                sumAE += ae;
-                countAE++;
-
-                if (logFile.is_open()) {
-                    logFile << std::fixed << std::setprecision(12)
-                            << it->processing_time << ";" << it->latest_cam_time << ";"
-                            << it->base_cam_lat << ";" << it->base_cam_lon << ";"
-                            << target_prediction_time << ";" << targetId << ";"
-                            << best_match->latitude << ";" << best_match->longitude << ";"
-                            << state_x << ";" << state_y << ";" << vel_x << ";" << vel_y << ";"
-                            << acc_x << ";" << acc_y << ";"
-                            << pred_lat << ";" << pred_lon << ";"
-                            << lat_ae << ";" << lon_ae << ";" << ae << "\n";
-                }
-                is_done = true;
-            } else {
-                all_done = false;
-            }
-        };
-
-        evaluate_horizon(1.0, it->eval_1s_done, mPredLog1s, mSumAe1s, mCountAe1s);
-        evaluate_horizon(2.0, it->eval_2s_done, mPredLog2s, mSumAe2s, mCountAe2s);
-        evaluate_horizon(3.0, it->eval_3s_done, mPredLog3s, mSumAe3s, mCountAe3s);
-
-        if (current_time > it->latest_cam_time + 4.5) all_done = true;
-
-        if (all_done) {
-            it = hist_struct.pending_queue.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
-void TrajAppKF6D::logTrajectory() {
-    try {
-        long myId = getParentModule()->getId();
-        if (!mCamLogFile.is_open()) return;
-
-        for (auto& pair : mOtherNodes) {
-            long targetId = pair.first;
-            auto& targetHist = pair.second;
-
-            if (targetHist.hasNewData && !targetHist.history.empty()) {
-                MovementDataKF6D latest = targetHist.history.back();
-                mCamLogFile << std::fixed << std::setprecision(12)
-                            << latest.gen_delta_time_raw << ";" << latest.cam_received_time << ";"
-                            << latest.calculated_delay << ";" << latest.timestamp.dbl() << ";"
-                            << myId << ";" << targetId << ";"
-                            << latest.latitude << ";" << latest.longitude << ";"
-                            << latest.speed_mps << ";" << latest.heading_degree << ";"
-                            << latest.acceleration_mps2 << "\n";
-                targetHist.hasNewData = false;
-            }
-        }
-        mCamLogFile.flush();
-    } catch (...) { return; }
-}
-
-void TrajAppKF6D::takeKfSnapshot() {
-    double t_sim = simTime().dbl();
-    for (auto& pair : mOtherNodes) {
-        auto& hist_struct = pair.second;
-        if (hist_struct.history.empty() || !hist_struct.kf_state) continue;
-
-        MovementDataKF6D current_latest_data = hist_struct.history.back();
-        double current_latest_cam_time = current_latest_data.timestamp.dbl();
-        if (t_sim - current_latest_cam_time > 1.5) continue;
-
-        PendingPredictionKF6D snap;
-        snap.processing_time = t_sim;
-        snap.latest_cam_time = current_latest_cam_time;
-        snap.base_cam_lat = current_latest_data.latitude;
-        snap.base_cam_lon = current_latest_data.longitude;
-        snap.kf_state_snapshot = hist_struct.kf_state->getState();
-
-        hist_struct.pending_queue.push_back(snap);
-    }
 }
 
 void TrajAppKF6D::finish() {
-    auto printMaeSummary = [](std::ofstream& stream, double sumAe, long countAe) {
-        if (stream.is_open() && countAe > 0) {
-            double mae_microdegree = sumAe / countAe;
-            double mae_meter = mae_microdegree * 0.11132;
-            stream << "\n;;;;;;;;;;;;;;;;;;MAE (microdegree);" << std::fixed << std::setprecision(12) << mae_microdegree << "\n";
-            stream << ";;;;;;;;;;;;;;;;;;MAE (meter);" << mae_meter << "\n";
-        }
-    };
-
-    printMaeSummary(mPredLog1s, mSumAe1s, mCountAe1s);
-    printMaeSummary(mPredLog2s, mSumAe2s, mCountAe2s);
-    printMaeSummary(mPredLog3s, mSumAe3s, mCountAe3s);
-
+    if (mCamLogFile.is_open()) mCamLogFile.close();
+    if (mPredLog1s.is_open()) mPredLog1s.close();
+    if (mPredLog2s.is_open()) mPredLog2s.close();
+    if (mPredLog3s.is_open()) mPredLog3s.close();
     ItsG5BaseService::finish();
 }
 
-void TrajAppKF6D::latLonToCartesian(double lat_micro, double lon_micro, double ref_lat_micro, double ref_lon_micro, double& x, double& y) {
-    const double R = 6371000.0;
-    double lat = lat_micro / 1000000.0;
-    double lon = lon_micro / 1000000.0;
-    double ref_lat = ref_lat_micro / 1000000.0;
-    double ref_lon = ref_lon_micro / 1000000.0;
-    double lat_rad = lat * M_PI / 180.0;
-    double lon_rad = lon * M_PI / 180.0;
-    double ref_lat_rad = ref_lat * M_PI / 180.0;
-    double ref_lon_rad = ref_lon * M_PI / 180.0;
-    x = R * (lon_rad - ref_lon_rad) * cos(ref_lat_rad);
-    y = R * (lat_rad - ref_lat_rad);
-}
+void TrajAppKF6D::receiveSignal(cComponent* source, simsignal_t signalID, cObject* obj, cObject* details) {
+    if (signalID == mCamReceivedSignal) {
+        if (auto ca_obj = dynamic_cast<CaObject*>(obj)) {
+            const vanetza::asn1::Cam& cam_wrapper = ca_obj->asn1();
+            const CAM_t& cam_struct = *cam_wrapper;
+            
+            long observer_id = getParentModule()->getParentModule()->getId();
+            long target_id = cam_struct.header.stationID;
+            double current_time = simTime().dbl();
+            
+            // =========================================================================
+            // DUAL-LAYER CROSS-ENTITY ISOLATION
+            // =========================================================================
+            const auto& basic = cam_struct.cam.camParameters.basicContainer;
+            long target_station_type = basic.stationType;
+            std::string target_type = "Vehicle"; 
+            
+            if (target_station_type == 1) {
+                target_type = "Pedestrian";
+            } else if (target_station_type == 0 || target_station_type == 5) {
+                cModule* targetNode = getSimulation()->getModule(target_id);
+                if (targetNode) {
+                    std::string nedType = targetNode->getNedTypeName();
+                    if (nedType.find("Person") != std::string::npos || nedType.find("Pedestrian") != std::string::npos) {
+                        target_type = "Pedestrian";
+                    }
+                }
+            }
 
-void TrajAppKF6D::cartesianToLatLon(double x, double y, double ref_lat_micro, double ref_lon_micro, double& lat_micro, double& lon_micro) {
-    const double R = 6371000.0;
-    double ref_lat = ref_lat_micro / 1000000.0;
-    double ref_lon = ref_lon_micro / 1000000.0;
-    double ref_lat_rad = ref_lat * M_PI / 180.0;
-    double ref_lon_rad = ref_lon * M_PI / 180.0;
-    double lat_rad = (y / R) + ref_lat_rad;
-    double lon_rad = (x / (R * cos(ref_lat_rad))) + ref_lon_rad;
-    double lat = lat_rad * 180.0 / M_PI;
-    double lon = lon_rad * 180.0 / M_PI;
-    lat_micro = lat * 1000000.0;
-    lon_micro = lon * 1000000.0;
+            std::string observer_type = getNodeType();
+
+            if (observer_type == target_type) {
+                return; // Prevent data leakage between same entity types
+            }
+            
+            double current_lat_raw = static_cast<double>(basic.referencePosition.latitude); 
+            double current_lon_raw = static_cast<double>(basic.referencePosition.longitude);
+            
+            // =========================================================================
+            // ETSI ITS-G5 HIGH-FREQUENCY PAYLOAD EXTRACTION (Speed, Heading, Acceleration)
+            // =========================================================================
+            double speed_mps = 0.0;
+            double heading_deg = 0.0;
+            double acc_mps2 = 0.0;
+
+            const auto& hf_container = cam_struct.cam.camParameters.highFrequencyContainer;
+            if (hf_container.present == HighFrequencyContainer_PR_basicVehicleContainerHighFrequency) {
+                const auto& bvhf = hf_container.choice.basicVehicleContainerHighFrequency;
+                
+                // Speed: 0.01 m/s, Heading: 0.1 degree, Longitudinal Acceleration: 0.1 m/s^2
+                speed_mps = static_cast<double>(bvhf.speed.speedValue) * 0.01;
+                heading_deg = static_cast<double>(bvhf.heading.headingValue) * 0.1;
+                acc_mps2 = static_cast<double>(bvhf.longitudinalAcceleration.longitudinalAccelerationValue) * 0.1;
+            }
+            
+            // Vector Decomposition based on Heading Angle
+            double heading_rad = heading_deg * M_PI / 180.0;
+            double vel_x = speed_mps * std::sin(heading_rad);
+            double vel_y = speed_mps * std::cos(heading_rad);
+            double acc_x = acc_mps2 * std::sin(heading_rad);
+            double acc_y = acc_mps2 * std::cos(heading_rad);
+            
+            // ATOMIC LOGGING FOR RAW CAM DATA
+            std::stringstream cam_ss;
+            cam_ss << std::fixed << std::setprecision(12) 
+                   << cam_struct.cam.generationDeltaTime << ";" 
+                   << current_time << ";" << 0.0 << ";" << current_time << ";" 
+                   << observer_id << ";" << target_id << ";"
+                   << current_lat_raw << ";" << current_lon_raw << ";" 
+                   << speed_mps << ";" << heading_deg << ";" << acc_mps2 << "\n";
+            mCamLogFile << cam_ss.str();
+            mCamLogFile.flush();
+
+            // =========================================================================
+            // KALMAN FILTER 6D INSTANTIATION & PREDICT-CORRECT CYCLE
+            // =========================================================================
+            AgentHistoryKF6D& agent = mOtherNodes[target_id];
+            
+            // Define geographical origin for Cartesian projection upon first sight
+            if (!agent.is_ref_set) {
+                agent.ref_lat_raw = current_lat_raw;
+                agent.ref_lon_raw = current_lon_raw;
+                agent.is_ref_set = true;
+                
+                agent.kf_state = std::make_unique<KalmanFilter6D>(); 
+                // Initialize 6D State Vector [X, Y, Vx, Vy, Ax, Ay]
+                agent.kf_state->init({0.0, 0.0, vel_x, vel_y, acc_x, acc_y}); 
+            }
+            
+            double local_x = 0.0, local_y = 0.0;
+            latLonToCartesian(current_lat_raw, current_lon_raw, agent.ref_lat_raw, agent.ref_lon_raw, local_x, local_y);
+
+            double dt = (agent.last_reception_time > 0.0) ? (current_time - agent.last_reception_time) : 0.1;
+            if (dt > 0.0 && agent.kf_state) {
+                agent.kf_state->predict(dt);
+                // Measurement update 6D Vector [X, Y, Vx, Vy, Ax, Ay]
+                agent.kf_state->update({local_x, local_y, vel_x, vel_y, acc_x, acc_y}); 
+            }
+            agent.last_reception_time = current_time;
+
+            // NEAREST NEIGHBOR EVALUATION QUEUE (Sliding Window: 4 Seconds)
+            agent.history.push_back({current_time, current_lat_raw, current_lon_raw, local_x, local_y, vel_x, vel_y, acc_x, acc_y});
+            double evaluation_window = 4.0; 
+            while (agent.history.size() > 1 && (current_time - agent.history.front().timestamp > evaluation_window)) {
+                agent.history.pop_front();
+            }
+
+            // =========================================================================
+            // CYCLIC PREDICTION TIMER (1.0s Horizon Snapshots)
+            // =========================================================================
+            double prediction_interval = 1.0; 
+            if (agent.last_prediction_time < 0.0 || (current_time - agent.last_prediction_time) >= prediction_interval) {
+                if (agent.kf_state) {
+                    PendingPredictionKF6D snap;
+                    snap.processing_time = current_time;
+                    snap.latest_cam_time = current_time;
+                    snap.base_cam_lat = current_lat_raw;
+                    snap.base_cam_lon = current_lon_raw;
+
+                    // Retrieving State Vector as std::vector<double> [X, Y, Vx, Vy, Ax, Ay]
+                    std::vector<double> current_state = agent.kf_state->getState();
+                    if(current_state.size() >= 6) {
+                        snap.state_x = current_state[0];
+                        snap.state_y = current_state[1];
+                        snap.vel_x = current_state[2];
+                        snap.vel_y = current_state[3];
+                        snap.acc_x = current_state[4];
+                        snap.acc_y = current_state[5];
+                    }
+
+                    agent.pending_queue.push_back(snap);
+                    agent.last_prediction_time = current_time;
+                }
+            }
+            
+            // =========================================================================
+            // ABSOLUTE ERROR EVALUATION (Nearest Neighbor Time Alignment & GLBB Extrapolation)
+            // =========================================================================
+            auto it = agent.pending_queue.begin();
+            while (it != agent.pending_queue.end()) {
+                bool all_done = true;
+
+                auto evaluate_horizon = [&](double horizon, bool& is_done, std::ofstream& logFile) {
+                    if (is_done) return;
+                    
+                    double ideal_target_time = it->latest_cam_time + horizon;
+
+                    if (current_time >= ideal_target_time) {
+                        const MovementDataKF6D* best_match = &agent.history.back(); 
+
+                        // Find the nearest CAM neighbor to the ideal prediction time
+                        if (current_time > ideal_target_time && agent.history.size() > 1) {
+                            const MovementDataKF6D& prev_cam = agent.history[agent.history.size() - 2];
+                            double diff_after = current_time - ideal_target_time;
+                            double diff_before = ideal_target_time - prev_cam.timestamp;
+                            if (diff_before <= diff_after) {
+                                best_match = &prev_cam;
+                            }
+                        }
+
+                        // 1. Cartesian Extrapolation using Constant Acceleration Kinematic Equation
+                        // Pos = Pos_0 + (V * t) + (0.5 * a * t^2)
+                        double dt_pred = best_match->timestamp - it->processing_time;
+                        double dt_squared = dt_pred * dt_pred;
+                        
+                        double pred_x = it->state_x + (it->vel_x * dt_pred) + (0.5 * it->acc_x * dt_squared);
+                        double pred_y = it->state_y + (it->vel_y * dt_pred) + (0.5 * it->acc_y * dt_squared);
+                        
+                        // 2. Conversion back to Geospatial standard
+                        double pred_lat_raw = 0.0, pred_lon_raw = 0.0;
+                        cartesianToLatLon(pred_x, pred_y, agent.ref_lat_raw, agent.ref_lon_raw, pred_lat_raw, pred_lon_raw);
+                        
+                        // 3. Error Computation
+                        double lat_ae = std::abs(best_match->lat_raw - pred_lat_raw);
+                        double lon_ae = std::abs(best_match->lon_raw - pred_lon_raw);
+                        double total_ae = std::sqrt((lat_ae * lat_ae) + (lon_ae * lon_ae));
+                        
+                        std::stringstream ss;
+                        ss << std::fixed << std::setprecision(12) 
+                           << it->processing_time << ";" << it->latest_cam_time << ";" 
+                           << observer_id << ";" << it->base_cam_lat << ";" << it->base_cam_lon << ";" 
+                           << best_match->timestamp << ";" << target_id << ";" 
+                           << best_match->lat_raw << ";" << best_match->lon_raw << ";" 
+                           << it->state_x << ";" << it->state_y << ";" << it->vel_x << ";" << it->vel_y << ";" << it->acc_x << ";" << it->acc_y << ";"
+                           << pred_lat_raw << ";" << pred_lon_raw << ";" 
+                           << lat_ae << ";" << lon_ae << ";" << total_ae << "\n";
+                        
+                        logFile << ss.str(); 
+                        logFile.flush();
+                        is_done = true;
+                    }
+                };
+
+                evaluate_horizon(1.0, it->eval_1s_done, mPredLog1s);
+                evaluate_horizon(2.0, it->eval_2s_done, mPredLog2s);
+                evaluate_horizon(3.0, it->eval_3s_done, mPredLog3s);
+
+                if (!it->eval_1s_done || !it->eval_2s_done || !it->eval_3s_done) all_done = false;
+                if (current_time > it->latest_cam_time + 4.5) all_done = true; // Drop dead targets
+
+                if (all_done) {
+                    it = agent.pending_queue.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
 }
 
 } // namespace artery

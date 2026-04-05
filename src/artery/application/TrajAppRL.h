@@ -1,17 +1,21 @@
 /**
  * @file TrajAppRL.h
  * @brief Header file for Trajectory Prediction Application using Linear Regression.
- * @details Defines the necessary data structures and class interfaces for tracking
- * target nodes and predicting future coordinates using Ordinary Least Squares (OLS).
+ * @details Evaluates ETSI ITS-G5 CAMs using Ordinary Least Squares (OLS) regression.
+ *          Implements a cyclic prediction timer and strict ISO/ETSI-compliant payload 
+ *          extraction to prevent data leakage and race conditions.
  */
 
-#ifndef ARTERY_TrajAppRL_H_
-#define ARTERY_TrajAppRL_H_
+#ifndef ARTERY_TRAJAPPRL_H_
+#define ARTERY_TRAJAPPRL_H_
 
 #include "artery/application/ItsG5BaseService.h"
+#include "artery/application/CaObject.h"
+#include <omnetpp.h>
 #include <omnetpp/simtime.h>
 #include <deque>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <map>
 
@@ -19,36 +23,27 @@ namespace artery {
 
 /**
  * @struct MovementDataRL
- * @brief Stores extracted and synchronized properties of a single received CAM.
+ * @brief Stores historical trajectory points for Linear Regression analysis.
  */
 struct MovementDataRL {
-    long gen_delta_time_raw;        ///< Raw GenerationDeltaTime from ASN.1 payload
-    double cam_received_time;       ///< Exact simulation time when the packet was received
-    double calculated_delay;        ///< Network transmission delay (Age of Information)
-    omnetpp::simtime_t timestamp;   ///< Absolute creation time of the packet in OMNeT++
-    double latitude;                ///< Absolute Latitude in microdegrees
-    double longitude;               ///< Absolute Longitude in microdegrees
-    double speed_mps;               ///< Speed in m/s extracted from basic vehicle container
-    double heading_degree;          ///< Heading in degrees
+    double timestamp;
+    double lat;
+    double lon;
 };
 
 /**
  * @struct PendingPredictionRL
- * @brief Holds the calculated Linear Regression coefficients waiting for future CAMs to evaluate Mean Absolute Error (MAE).
+ * @brief Holds calculated LR coefficients to evaluate future Absolute Error.
  */
 struct PendingPredictionRL {
-    double processing_time;         ///< The exact time the snapshot/prediction was taken
-    double latest_cam_time;         ///< The timestamp of the most recent CAM used for prediction
-    double base_cam_lat;            ///< Latitude at the time of prediction
-    double base_cam_lon;            ///< Longitude at the time of prediction
-    
-    // Linear Regression Coefficients (Y = mX + C)
-    double slope_lat;               ///< Slope (m) for Latitude progression
-    double intercept_lat;           ///< Intercept (C) for Latitude progression
-    double slope_lon;               ///< Slope (m) for Longitude progression
-    double intercept_lon;           ///< Intercept (C) for Longitude progression
-    
-    // Multi-stage evaluation flags to ensure each horizon is evaluated exactly once
+    double processing_time;
+    double latest_cam_time;
+    double base_cam_lat;
+    double base_cam_lon;
+    double slope_lat;
+    double intercept_lat;
+    double slope_lon;
+    double intercept_lon;
     bool eval_1s_done = false;
     bool eval_2s_done = false;
     bool eval_3s_done = false;
@@ -56,73 +51,43 @@ struct PendingPredictionRL {
 
 /**
  * @struct AgentHistoryRL
- * @brief Maintains the sliding window history and prediction queues for a specific target node.
+ * @brief Maintains tracking memory queue and cyclic timer for the target node.
  */
 struct AgentHistoryRL {
-    std::deque<MovementDataRL> history;           ///< Sliding window of recent CAMs (used for OLS fitting)
-    std::deque<PendingPredictionRL> pending_queue;///< Queue of snapshots awaiting future CAMs for evaluation
-    
-    omnetpp::simtime_t lastReceptionTime;       ///< Tracks the last time a message was received from this target
-    bool hasNewData = false;                    ///< Flag to trigger trajectory logging
+    std::deque<MovementDataRL> history;
+    std::deque<PendingPredictionRL> pending_queue;
+    double last_prediction_time = -1.0; // Cyclic timer initialization
 };
 
 /**
  * @class TrajAppRL
- * @brief OMNeT++ simple module class for ITS-G5 based trajectory prediction via Linear Regression.
+ * @brief OMNeT++ V2X Application for Trajectory Prediction via Linear Regression.
  */
 class TrajAppRL : public ItsG5BaseService {
 public:
-    virtual ~TrajAppRL(); 
-    virtual void initialize() override;
-    virtual void finish() override;
+    virtual ~TrajAppRL() override;
 
 protected:
-    virtual void handleMessage(omnetpp::cMessage* msg) override;
+    virtual void initialize() override;
+    virtual void finish() override;
     virtual void receiveSignal(omnetpp::cComponent* source, omnetpp::simsignal_t signalID, omnetpp::cObject* obj, omnetpp::cObject* details) override;
 
 private:
-    /**
-     * @brief Logs the raw CAM data to the CSV file.
-     */
-    void logTrajectory();
-
-    /**
-     * @brief Captures the current trajectory history and calculates OLS coefficients.
-     */
-    void takeRlSnapshot();
-
-    /**
-     * @brief Evaluates the accuracy of pending predictions against newly arrived CAMs.
-     * @param targetId The ID of the node being tracked.
-     * @param hist_struct The history and pending queue structure for the target.
-     */
-    void evaluatePendingPredictionsRL(long targetId, AgentHistoryRL& hist_struct);
-
-    /**
-     * @brief Determines whether the hosting node is a Vehicle or a Person.
-     * @return String literal "Vehicle", "Person", or "Unknown".
-     */
     std::string getNodeType();
-
-    omnetpp::cMessage* mLogTimer = nullptr;
-    omnetpp::cMessage* mPredictionTimer = nullptr;
-    omnetpp::simsignal_t mCamReceivedSignal;
-    omnetpp::SimTime mLogInterval;
-
-    // File streams for data logging
+    
+    // Global tracking memory for surrounding entities
+    std::map<long, AgentHistoryRL> mOtherNodes;
+    
+    // Output File Streams
     std::ofstream mCamLogFile;
     std::ofstream mPredLog1s;
     std::ofstream mPredLog2s;
     std::ofstream mPredLog3s;
-
-    // Accumulators for Mean Absolute Error (MAE) calculation
-    double mSumAe1s = 0.0, mSumAe2s = 0.0, mSumAe3s = 0.0;
-    long mCountAe1s = 0, mCountAe2s = 0, mCountAe3s = 0;
     
-    // Hash map to track multiple targets simultaneously
-    std::map<long, AgentHistoryRL> mOtherNodes;
+    // CAM reception signal identifier
+    omnetpp::simsignal_t mCamReceivedSignal;
 };
 
 } // namespace artery
 
-#endif // ARTERY_TrajAppRL_H_
+#endif

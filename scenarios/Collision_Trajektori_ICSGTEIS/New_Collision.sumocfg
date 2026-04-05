@@ -7,7 +7,9 @@
 
     <input>
         <net-file value="New_Collision.net.xml"/>
-        <route-files value="New_Collision.rou.xml"/>
+<!--        <route-files value="New_Collision.rou.xml"/>
+-->
+		<route-files value="Extensive_Nodes.rou.xml"/>
     </input>
     
     <time>
