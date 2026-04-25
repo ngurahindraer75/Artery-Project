@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- 
+  =============================================================================
+  Extensive Nodes Collision Scenario for V2X Trajectory Prediction
+  Generated for Artery, OMNeT++, and SUMO Simulation Framework.
+  
+  Description:
+  This configuration is specifically designed to simulate extreme and 
+  stochastic traffic conflicts (hard-braking, aggressive maneuvers) 
+  to test the boundaries of the Hybrid KF-LSTM collision detection model.
+  ============================================================================= 
+-->
+
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <!-- Retain the baseline physical network topology -->
+        <net-file value="Extensive_Nodes.net.xml"/>
+        
+        <!-- Inject the extreme routing behavior and hard-coded pedestrian trajectories -->
+        <route-files value="Extensive_Nodes.rou.xml"/>
+    </input>
+
+    <time>
+        <begin value="0"/>
+        <end value="140"/>
+        
+        <!-- 
+          Crucial: 0.1s step-length is strictly required to match the 10Hz CAM 
+          generation rate and to maintain realistic car-following physics 
+          for the Kalman Filter state arrays.
+        -->
+        <step-length value="0.1"/>
+    </time>
+
+    <processing>
+        <!-- 
+          DISABLE SUMO AI COLLISION AVOIDANCE: 
+          By default, SUMO teleports or removes colliding entities. 
+          Setting this to 'none' forces natural physical collisions, 
+          which is mandatory for validating the V2X early warning algorithm.
+        -->
+        <collision.action value="none"/>
+        <lateral-resolution value="0.8"/>
+    </processing>
+
+    <report>
+        <!-- Ensure strict XML validation for robust simulation runs -->
+        <xml-validation value="always"/>
+        <xml-validation.net value="always"/>
+        <no-step-log value="false"/>
+    </report>
+
+</configuration>

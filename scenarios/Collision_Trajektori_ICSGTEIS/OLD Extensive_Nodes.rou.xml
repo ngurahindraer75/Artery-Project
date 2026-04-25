@@ -121,16 +121,92 @@
     <!-- ================================================================== -->
     
     <!-- ================== ALL PEDESTRIANS SPAWN (0.00s) ================= -->
+    <person id="p_0" depart="0.00" departPos="50.0">
+        <!-- Spawns mid-block on -E8. Intersects J5 at ~T=21s -->
+        <walk edges="-E8 E3 -E7 -E21 -E20 E16 E17 E15 -E12 -E11"/>
+    </person>
+    <person id="p_1" depart="0.00" departPos="65.0">
+        <!-- Spawns closer to J5 on -E8. Intersects J5 at ~T=10s -->
+        <walk edges="-E8 E5 -E15 -E17 -E16 E30 E0 E1 -E4"/>
+    </person>
+    <person id="p_2" depart="0.00" departPos="30.0">
+        <!-- Spawns far back on -E8. Intersects J5 at ~T=36s -->
+        <walk edges="-E8 E4 E2 E6 -E30 E20 E21 E7 -E3"/>
+    </person>
+    <person id="p_3" depart="0.00" departPos="110.0">
+        <!-- Spawns mid-block on West approach -E4. Intersects J5 at ~T=35s -->
+        <walk edges="-E4 E8 E11 E12 -E5 E3 -E7 -E22 E6 E0 E1"/>
+    </person>
+    
     <person id="p_4" depart="0.00" departPos="140.0">
         <!-- Spawns far mid-block on NW Ring E30. Reaches Roundabout at ~T=45s -->
         <walk edges="E30 E0 E1 -E4 E8 E11 E12 -E5 E4"/>
     </person>
+    <person id="p_5" depart="0.00" departPos="112.0">
+        <!-- Spawns far mid-block on NE Ring -E22. Reaches Roundabout at ~T=46s -->
+        <walk edges="-E22 E6 E0 E1 -E4 E8 E11 E12 -E5"/>
+    </person>
+    <person id="p_6" depart="0.00" departPos="97.0">
+        <!-- Spawns far mid-block on SE approach E4. Reaches Roundabout at ~T=45s -->
+        <walk edges="E4 E2 E6 -E30 E20 E21 E7 -E3 E8"/>
+    </person>
+    <person id="p_7" depart="0.00" departPos="78.0">
+        <!-- Spawns mid-block on SW approach E32. Reaches Roundabout at ~T=45s -->
+        <walk edges="E32 E1 E2 E6 E0 -E32 E14 -E17 -E16"/>
+    </person>
+    <person id="p_8" depart="0.00" departPos="71.0">
+        <!-- Spawns far mid-block on West -E4. Intersects Ground Zero J5 at ~T=65s -->
+        <walk edges="-E4 E8 E11 E12 -E5 E3 E7 E21 E20 -E30"/>
+    </person>
 
     <!-- ================== VEHICLES SPAWN & INTERCEPT ==================== -->
     
+    <!-- === TIMESTEP: 4.00s (Intercepts p_1 at J5) === -->
+    <vehicle id="v_0" depart="4.00" route="r_0" departSpeed="max">
+        <stop lane="-E8_1" endPos="75.0" duration="0.5"/>
+    </vehicle>
+
+    <!-- === TIMESTEP: 8.50s (Intercepts p_0 at J5) === -->
+    <vehicle id="v_2" depart="8.50" route="r_1" departSpeed="max">
+        <stop lane="-E3_1" endPos="170.0" duration="0.5"/>
+    </vehicle>
+
+    <!-- === TIMESTEP: 23.50s (Intercepts p_2 at J5) === -->
+    <vehicle id="v_3" depart="23.50" route="r_2" departSpeed="max">
+        <stop lane="-E5_1" endPos="170.0" duration="0.5"/>
+    </vehicle>
+
+    <!-- === TIMESTEP: 24.00s (Intercepts p_3 at J5) === -->
+    <vehicle id="v_1" depart="24.00" route="r_3" departSpeed="max">
+        <stop lane="-E4_1" endPos="150.0" duration="0.5"/>
+    </vehicle>
+
     <!-- === TIMESTEP: 31.00s (Roundabout 360 U-Turn Ambush 1) === -->
     <vehicle id="v_6" depart="31.00" route="r_6" departSpeed="max">
         <stop lane="E30_1" endPos="190.0" duration="0.5"/>
+    </vehicle>
+
+    <!-- === TIMESTEP: 33.00s (Roundabout 360 U-Turn Ambush 2) === -->
+    <vehicle id="v_5" depart="33.00" route="r_5" departSpeed="max">
+        <stop lane="-E22_1" endPos="160.0" duration="0.5"/>
+    </vehicle>
+
+    <!-- === TIMESTEP: 34.00s (Roundabout 360 U-Turn Ambush 3) === -->
+    <vehicle id="v_4" depart="34.00" route="r_4" departSpeed="max">
+        <stop lane="E4_1" endPos="145.0" duration="0.5"/>
+    </vehicle>
+
+    <!-- === TIMESTEP: 35.50s (Roundabout 360 U-Turn Ambush 4) === -->
+    <vehicle id="v_7" depart="35.50" route="r_7" departSpeed="max">
+        <stop lane="E32_1" endPos="125.0" duration="0.5"/>
+    </vehicle>
+
+    <!-- === TIMESTEP: 58.00s (The Chaos Vehicle intercepts p_8 at J5) === -->
+    <vehicle id="v_8" depart="58.00" route="r_8" departSpeed="max">
+        <!-- Multiple stutters before hitting J5 to challenge LSTM vs KF -->
+        <stop lane="-E8_1" endPos="75.0" duration="0.2"/>
+        <stop lane="E4_1" endPos="150.0" duration="0.3"/>
+        <stop lane="-E4_1" endPos="145.0" duration="0.5"/>
     </vehicle>
 
 </routes>

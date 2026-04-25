@@ -9,6 +9,7 @@ add_library(core SHARED
     application/TrajAppRL.cc
 
     ### app for KF implementation ###
+    application/TrajektoriAppKF.cc
     application/TrajAppKF6D.cc
     application/KalmanFilter6D.h
     application/TrajAppKF4D.cc

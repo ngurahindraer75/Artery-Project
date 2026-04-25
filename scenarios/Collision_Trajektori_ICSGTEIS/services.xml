@@ -9,7 +9,7 @@
     </service>
 
     <!-- use the correct TrajApp (TrajAppRL or TrajAppKF4D or TrajAppKF6D) -->
-    <service type="artery.application.TrajAppKF6D" name="TrajApp">
+    <service type="artery.application.TrajektoriAppKF" name="TrajApp">
         <listener port="2002"/>
         <filters>
             <type pattern="artery.inet.Car" match="true"/>
